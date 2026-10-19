@@ -393,4 +393,6 @@ do {
     check.expectEqual(FanControlInput(rawValue: "system"), .system, "system input round-trips through its raw value")
 }
 
+runSystemInputWatchChecks(check)
+
 exit(check.summary())

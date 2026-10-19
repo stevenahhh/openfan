@@ -52,6 +52,9 @@ public final class FanController {
     /// Input the active hold follows; nil unless hold is the current mode.
     public var holdInput: FanControlInput? { mode == .hold ? input : nil }
 
+    /// Target the active hold follows; nil unless hold is the current mode.
+    public var holdTarget: Double? { mode == .hold ? holdLoop?.target : nil }
+
     public init(fans: [FanInfo], config: ControllerConfig = ControllerConfig()) {
         self.fans = fans
         self.config = config
@@ -103,6 +106,13 @@ public final class FanController {
         self.usedTemperature = nil
         self.lastTargets = Array(repeating: nil, count: fans.count)
         self.mode = .hold
+    }
+
+    /// Starts the hold loop over as a fresh released loop. The next tick re-seeds from the fan's actual
+    /// speed instead of applying the integrator accumulated before sleep, which would be stale.
+    public func restartHold() {
+        guard mode == .hold, let loop = holdLoop else { return }
+        holdLoop = HoldLoop(target: loop.target, config: loop.config)
     }
 
     public func noteWriteFailure(_ reason: String) {
