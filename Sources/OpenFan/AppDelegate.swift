@@ -37,7 +37,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     private static let heartbeatInterval: TimeInterval = 5
 
     /// What the popover shows; the fans' target speeds are not on it.
-    private static let popoverSensors: SensorSet = [.cpu, .gpu, .battery, .fans]
+    private static let popoverSensors: SensorSet = [.cpu, .gpu, .battery, .system, .fans]
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         _ = try? store.load()
@@ -202,6 +202,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             helperStatus: helper.lastStatus,
             helperError: helper.lastError ?? helperMessage,
             hasBattery: telemetry?.hasBattery ?? true,
+            hasSystem: telemetry?.hasSystem ?? false,
+            hasForceTest: telemetry?.hasForceTest ?? false,
             update: updateOffer
         )
     }

@@ -70,7 +70,7 @@ final class HelperClient {
         queue.async { [self] in
             desiredPreset = preset
             guard openIfNeeded() else { return }
-            recordReply(transact(HelperCommand.curve(input: preset.input, points: preset.points).serialized))
+            recordReply(transact(Self.command(for: preset)))
         }
     }
 
@@ -124,9 +124,17 @@ final class HelperClient {
         nextAttempt = .distantPast
         setConnected(true)
         if let preset = desiredPreset {
-            recordReply(transact(HelperCommand.curve(input: preset.input, points: preset.points).serialized))
+            recordReply(transact(Self.command(for: preset)))
         }
         return true
+    }
+
+    /// A preset with a target holds that temperature; any other preset is a curve.
+    private static func command(for preset: Preset) -> String {
+        if let target = preset.target {
+            return HelperCommand.hold(input: preset.input, target: target).serialized
+        }
+        return HelperCommand.curve(input: preset.input, points: preset.points).serialized
     }
 
     private func scheduleBackoff() {

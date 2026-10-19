@@ -14,6 +14,10 @@ public struct LiveSnapshot {
     public var helperError: String?
     /// False on a desktop Mac: the battery column and the battery curve input are hidden.
     public var hasBattery: Bool
+    /// TVS0 exists: system holds are offered.
+    public var hasSystem: Bool
+    /// An M3/M4 force-test Mac: hold presets stay hidden until hold is verified there.
+    public var hasForceTest: Bool
     /// What the footer offers about a newer release; nil shows nothing.
     public var update: UpdateOffer?
 
@@ -27,6 +31,8 @@ public struct LiveSnapshot {
         helperStatus: HelperStatus?,
         helperError: String?,
         hasBattery: Bool = true,
+        hasSystem: Bool = false,
+        hasForceTest: Bool = false,
         update: UpdateOffer? = nil
     ) {
         self.reading = reading
@@ -38,6 +44,8 @@ public struct LiveSnapshot {
         self.helperStatus = helperStatus
         self.helperError = helperError
         self.hasBattery = hasBattery
+        self.hasSystem = hasSystem
+        self.hasForceTest = hasForceTest
         self.update = update
     }
 }
@@ -87,6 +95,14 @@ public final class PopoverViewController: NSViewController {
     let footer = PopoverFooter(width: Layout.inner)
     let helpBubble = HelpBubbleView()
     private var snapshot: LiveSnapshot?
+    private var visibility = (hasSystem: false, hasForceTest: false)
+
+    /// The library as the preset row shows it: hold presets this Mac cannot run are left out, the stored file is not.
+    private var visibleLibrary: PresetLibrary {
+        var library = store.library
+        library.presets = library.visiblePresets(hasSystem: visibility.hasSystem, hasForceTest: visibility.hasForceTest)
+        return library
+    }
     private(set) var showingSettings = false
 
     public init(store: PresetStore, settings: SettingsStore, actions: PopoverActions) {
@@ -163,7 +179,7 @@ public final class PopoverViewController: NSViewController {
         ])
         view = root
 
-        slider.reload(library: store.library)
+        slider.reload(library: visibleLibrary)
         editor.showActive()
         resize()
     }
@@ -191,6 +207,11 @@ public final class PopoverViewController: NSViewController {
         readout.hasBattery = snapshot.hasBattery
         header.update(readout)
         editor.setBatteryAvailable(snapshot.hasBattery)
+        editor.setSystemAvailable(snapshot.hasSystem)
+        if (snapshot.hasSystem, snapshot.hasForceTest) != (visibility.hasSystem, visibility.hasForceTest) {
+            visibility = (snapshot.hasSystem, snapshot.hasForceTest)
+            slider.reload(library: visibleLibrary)
+        }
         footer.update(pressure: snapshot.pressure)
         footer.update(offer: snapshot.update)
 
@@ -199,7 +220,8 @@ public final class PopoverViewController: NSViewController {
         }
 
         let temperature = editor.activeInput.flatMap { snapshot.reading?.input($0) }
-        editor.updateLive(temperature: temperature, speed: FanSpeedFormat(fan: snapshot.fans.first, showsRPM: header.showsRPM))
+        editor.updateLive(temperature: temperature, speed: FanSpeedFormat(fan: snapshot.fans.first, showsRPM: header.showsRPM),
+                          holding: snapshot.helperStatus?.mode == .hold)
     }
 
     private func resize() {
@@ -232,14 +254,14 @@ public final class PopoverViewController: NSViewController {
             editor.report("Save failed: \(error.localizedDescription)")
         }
         editor.showActive()
-        slider.reload(library: store.library)
+        slider.reload(library: visibleLibrary)
         actions.presetsChanged()
         refreshHeader()
         resize()
     }
 
     private func libraryChanged() {
-        slider.reload(library: store.library)
+        slider.reload(library: visibleLibrary)
         resize()
         actions.presetsChanged()
         refreshHeader()

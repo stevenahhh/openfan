@@ -102,11 +102,11 @@ check.expectClose(silent.percent(at: 120), 100, tolerance: 0.0001, "clamp above 
 // MARK: - PresetLibrary.defaults
 
 let defaults = PresetLibrary.defaults()
-check.expectEqual(defaults.version, 2, "defaults version")
+check.expectEqual(defaults.version, 3, "defaults version")
 check.expectEqual(defaults.active, PresetLibrary.autoID, "defaults active is auto")
-check.expectEqual(defaults.presets.count, 4, "defaults has 4 presets")
-check.expectEqual(defaults.presets.map { $0.id }, ["silent", "balanced", "performance", "full"], "defaults ids")
-check.expectEqual(defaults.presets.map { $0.name }, ["Silent", "Balanced", "Performance", "Full"], "defaults names")
+check.expectEqual(defaults.presets.count, 5, "defaults has 5 presets")
+check.expectEqual(defaults.presets.map { $0.id }, ["silent", "quiet45", "balanced", "performance", "full"], "defaults ids")
+check.expectEqual(defaults.presets.map { $0.name }, ["Silent", "Quiet 45 °C", "Balanced", "Performance", "Full"], "defaults names")
 let silentPreset = defaults.preset(id: "silent")
 check.expect(silentPreset != nil, "silent preset exists")
 check.expectEqual(silentPreset?.points ?? [], [
@@ -122,15 +122,58 @@ check.expectEqual(defaults.preset(id: "full")?.points ?? [], [
     CurvePoint(t: 0, p: 100), CurvePoint(t: 130, p: 100),
 ], "Full points exactly as listed")
 check.expect(defaults.presets.allSatisfy(\.isBuiltIn), "the defaults are all built-ins")
-for preset in defaults.presets where preset.id != PresetLibrary.fullID {
+for preset in defaults.presets where !preset.isHold && preset.id != PresetLibrary.fullID {
     check.expectClose(preset.curve.percent(at: 30), 0, tolerance: 0.0001, "\(preset.id) stops the fans at 30 C")
 }
 check.expectClose(defaults.preset(id: PresetLibrary.fullID)!.curve.percent(at: 20), 100, tolerance: 0.0001,
                   "Full holds full speed at any temperature")
 for preset in defaults.presets {
-    check.expectNoThrow("default preset \(preset.id) validates") { try preset.curve.validate() }
+    if preset.isHold {
+        check.expect(preset.isValid, "default hold \(preset.id) validates")
+    } else {
+        check.expectNoThrow("default preset \(preset.id) validates") { try preset.curve.validate() }
+    }
 }
 let maxInput = silentPreset!.input
+
+// Hold presets keep a target instead of a curve.
+let quiet = defaults.preset(id: PresetLibrary.quietHoldID)
+check.expect(quiet != nil, "the Quiet 45 °C preset exists")
+check.expectEqual(quiet?.name ?? "", "Quiet 45 °C", "quiet preset name")
+check.expectEqual(quiet?.isBuiltIn ?? false, true, "quiet preset is built in")
+check.expectEqual(quiet?.isHold ?? false, true, "quiet preset is a hold")
+check.expect(quiet?.input == .system, "quiet preset holds the system temperature")
+check.expectEqual(quiet?.target ?? 0, 45, "quiet preset target is 45 C")
+check.expectEqual(quiet?.points ?? [], [], "quiet preset has no curve points")
+check.expectEqual(quiet?.isValid ?? false, true, "quiet preset is valid")
+check.expectEqual(quiet?.editorNote ?? "", "Built-in preset. Duplicate it to pick your own target.",
+                  "a built-in hold points at duplication")
+if let quiet, let silentPreset {
+    let curveJSON = (try? JSONEncoder().encode(silentPreset)).map { String(decoding: $0, as: UTF8.self) } ?? ""
+    let holdJSON = (try? JSONEncoder().encode(quiet)).map { String(decoding: $0, as: UTF8.self) } ?? ""
+    check.expect(!curveJSON.contains("\"target\""), "a curve preset encodes without a target key")
+    check.expect(holdJSON.contains("\"target\":45"), "a hold preset encodes its target")
+}
+check.expectEqual(Preset.holdRange(for: .system), 40...50, "system hold range")
+check.expectEqual(Preset.holdRange(for: .max), 70...100, "max hold range")
+check.expectEqual(Preset.holdRange(for: .cpu), 70...100, "cpu hold range")
+check.expectEqual(Preset.holdRange(for: .gpu), 70...100, "gpu hold range")
+check.expectEqual(Preset.holdRange(for: .battery), 30...40, "battery hold range")
+check.expect(Preset(id: "h", name: "H", input: .system, points: [], target: 45).isValid,
+             "a system hold inside the helper range is valid")
+check.expect(!Preset(id: "h", name: "H", input: .system, points: [], target: 200).isValid,
+             "a hold above the helper range is invalid")
+check.expect(!Preset(id: "h", name: "H", input: .system, points: [], target: .nan).isValid,
+             "a non-finite hold is invalid")
+check.expect(!Preset(id: "h", name: "H", input: .battery, points: [], target: 35).isValid,
+             "a battery hold is invalid")
+check.expect(!Preset(id: "c", name: "C", input: .max, points: [CurvePoint(t: 50, p: 0)]).isValid,
+             "an invalid curve is invalid")
+let quietCopy = defaults.newCustomPreset(copying: quiet)
+check.expectEqual(quietCopy.target ?? 0, 45, "a copy of a hold keeps its target")
+check.expect(quietCopy.input == .system, "a copy of a hold keeps its input")
+check.expectEqual(quietCopy.id, "custom-1", "a copy of a hold gets a fresh id")
+check.expect(!quietCopy.isBuiltIn, "a copy of a hold is a user preset")
 
 // The editor's copy/new rules and the notes it shows for presets it cannot edit.
 let copyOfBuiltIn = defaults.newCustomPreset(copying: defaults.preset(id: "balanced"))
@@ -204,18 +247,18 @@ let custom = Preset(id: "custom", name: "Custom", input: maxInput, points: [
 check.expectNoThrow("upsert appends") { try storeActive.upsert(custom) }
 let reloadedUpsert = check.expectNoThrow("reload after upsert") { try PresetStore(url: storeURL).load() }
 check.expectEqual(reloadedUpsert?.preset(id: "custom"), custom, "upsert persisted")
-check.expectEqual(reloadedUpsert?.presets.count ?? 0, 5, "upsert kept the defaults")
+check.expectEqual(reloadedUpsert?.presets.count ?? 0, 6, "upsert kept the defaults")
 check.expectNoThrow("upsert replaces") { try storeActive.upsert(Preset(id: "custom", name: "Custom2", input: maxInput, points: [
     CurvePoint(t: 40, p: 10), CurvePoint(t: 80, p: 95),
 ])) }
 let reloadedReplace = check.expectNoThrow("reload after replace") { try PresetStore(url: storeURL).load() }
-check.expectEqual(reloadedReplace?.presets.count ?? 0, 5, "replace did not add a preset")
+check.expectEqual(reloadedReplace?.presets.count ?? 0, 6, "replace did not add a preset")
 check.expectEqual(reloadedReplace?.preset(id: "custom")?.name ?? "", "Custom2", "replace updated the name")
 
 check.expectNoThrow("remove custom") { try storeActive.remove(id: "custom") }
 let reloadedRemove = check.expectNoThrow("reload after remove") { try PresetStore(url: storeURL).load() }
 check.expectEqual(reloadedRemove?.preset(id: "custom"), nil, "remove persisted")
-check.expectEqual(reloadedRemove?.presets.count ?? 0, 4, "remove dropped one preset")
+check.expectEqual(reloadedRemove?.presets.count ?? 0, 5, "remove dropped one preset")
 
 check.expectThrows("a built-in cannot be removed") { try storeActive.remove(id: "balanced") }
 check.expectThrows("a built-in cannot be upserted") {
@@ -223,7 +266,7 @@ check.expectThrows("a built-in cannot be upserted") {
 }
 let reloadedRefused = check.expectNoThrow("reload after refused writes") { try PresetStore(url: storeURL).load() }
 check.expectEqual(reloadedRefused?.preset(id: "silent")?.name ?? "", "Silent", "the built-in is unchanged")
-check.expectEqual(reloadedRefused?.presets.count ?? 0, 4, "a refused write saves nothing")
+check.expectEqual(reloadedRefused?.presets.count ?? 0, 5, "a refused write saves nothing")
 
 let activeCustom = Preset(id: "custom-7", name: "Active", input: maxInput, points: [
     CurvePoint(t: 40, p: 10), CurvePoint(t: 80, p: 90),
@@ -233,7 +276,7 @@ check.expectNoThrow("activate the custom") { try storeActive.setActive("custom-7
 check.expectNoThrow("remove the active custom") { try storeActive.remove(id: "custom-7") }
 let reloadedRemoveActive = check.expectNoThrow("reload after removing the active preset") { try PresetStore(url: storeURL).load() }
 check.expectEqual(reloadedRemoveActive?.active ?? "", PresetLibrary.autoID, "removing the active preset resets to auto")
-check.expectEqual(reloadedRemoveActive?.presets.count ?? 0, 4, "the custom preset is gone")
+check.expectEqual(reloadedRemoveActive?.presets.count ?? 0, 5, "the custom preset is gone")
 
 // load() drops invalid presets and repairs a dangling active id.
 let badJSON = """
@@ -244,7 +287,7 @@ let badJSON = """
 """
 try? badJSON.data(using: .utf8)!.write(to: storeURL)
 let repaired = check.expectNoThrow("load drops invalid presets") { try PresetStore(url: storeURL).load() }
-check.expectEqual(repaired?.presets.count ?? -1, 5, "invalid preset dropped, built-ins kept")
+check.expectEqual(repaired?.presets.count ?? -1, 6, "invalid preset dropped, built-ins kept")
 check.expectEqual(repaired?.preset(id: "broken"), nil, "broken preset removed")
 check.expectEqual(repaired?.preset(id: "good")?.name ?? "", "Good", "valid preset kept")
 check.expectEqual(repaired?.active ?? "", PresetLibrary.autoID, "dangling active repaired to auto")
@@ -259,7 +302,7 @@ let legacyJSON = """
 """
 try? legacyJSON.data(using: .utf8)!.write(to: storeURL)
 let migrated = check.expectNoThrow("load migrates a version 1 file") { try PresetStore(url: storeURL).load() }
-check.expectEqual(migrated?.presets.count ?? 0, 6, "the built-ins plus both user presets")
+check.expectEqual(migrated?.presets.count ?? 0, 7, "the built-ins plus both user presets")
 check.expectEqual(migrated?.preset(id: "silent")?.points ?? [], defaults.preset(id: "silent")?.points ?? [],
                   "an untouched built-in copy is dropped")
 check.expectEqual(migrated?.preset(id: "performance")?.name ?? "", "Performance", "the built-in comes back")
@@ -271,9 +314,74 @@ check.expectEqual(migrated?.active ?? "", "custom-1", "the active selection foll
 check.expectEqual(migrated?.preset(id: "custom")?.name ?? "", "Mine", "the user preset is kept")
 let reloadedMigration = check.expectNoThrow("reload after migration") { try PresetStore(url: storeURL).load() }
 check.expectEqual(reloadedMigration, migrated, "migration is idempotent")
-check.expectEqual(reloadedMigration?.version ?? 0, 2, "the file is rewritten as version 2")
+check.expectEqual(reloadedMigration?.version ?? 0, 3, "the file is rewritten as version 3")
 
 try? FileManager.default.removeItem(at: tmpRoot)
+
+// MARK: - Hold preset persistence and visibility
+
+do {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent("openfan-hold-\(UUID().uuidString)")
+    defer { try? FileManager.default.removeItem(at: root) }
+    let url = root.appendingPathComponent("presets.json")
+
+    // A custom hold keeps its target across save and load.
+    let store = PresetStore(url: url)
+    _ = check.expectNoThrow("hold store: load defaults") { try store.load() }
+    let customHold = Preset(id: "custom-hold", name: "My Hold", input: .cpu, points: [], target: 85)
+    check.expectNoThrow("upsert a custom hold") { try store.upsert(customHold) }
+    check.expectNoThrow("activate the custom hold") { try store.setActive("custom-hold") }
+    let reloaded = check.expectNoThrow("reload the custom hold") { try PresetStore(url: url).load() }
+    check.expectEqual(reloaded?.preset(id: "custom-hold")?.target ?? 0, 85, "a custom hold keeps its target")
+    check.expect(reloaded?.preset(id: "custom-hold")?.input == .cpu, "a custom hold keeps its input")
+    check.expectEqual(reloaded?.active ?? "", "custom-hold", "a custom hold can be active")
+
+    // A version 2 file has no targets: it decodes, and every preset is a curve.
+    let v2JSON = """
+    {"version":2,"active":"mine","presets":[{"id":"mine","name":"Mine","input":"max","points":[{"t":30,"p":10},{"t":80,"p":90}]}]}
+    """
+    let v2Data = Data(v2JSON.utf8)
+    try? v2Data.write(to: url)
+    let decodedV2 = check.expectNoThrow("decode a version 2 file") {
+        try JSONDecoder().decode(PresetLibrary.self, from: v2Data)
+    }
+    check.expect(decodedV2?.presets.allSatisfy { !$0.isHold } ?? false, "version 2 presets are all curves")
+    let v2 = check.expectNoThrow("load a version 2 file") { try PresetStore(url: url).load() }
+    check.expectEqual(v2?.version ?? 0, 3, "a version 2 file is rewritten as version 3")
+    check.expect(v2?.preset(id: "mine")?.target == nil, "a preset without target decodes with a nil target")
+    check.expectEqual(v2?.preset(id: "mine")?.name ?? "", "Mine", "the version 2 preset is kept")
+    check.expectEqual(v2?.active ?? "", "mine", "the version 2 active preset is kept")
+
+    // A stored hold that the helper would refuse is dropped by merging.
+    let badHoldsJSON = """
+    {"version":3,"active":"too-hot","presets":[
+    {"id":"too-hot","name":"Too Hot","input":"cpu","points":[],"target":200},
+    {"id":"battery-hold","name":"Battery Hold","input":"battery","points":[],"target":35},
+    {"id":"good-hold","name":"Good Hold","input":"gpu","points":[],"target":80},
+    {"id":"good-curve","name":"Good Curve","input":"max","points":[{"t":30,"p":10},{"t":80,"p":90}]}
+    ]}
+    """
+    try? Data(badHoldsJSON.utf8).write(to: url)
+    let filtered = check.expectNoThrow("load drops unusable holds") { try PresetStore(url: url).load() }
+    check.expectEqual(filtered?.preset(id: "too-hot"), nil, "a hold above the helper range is dropped")
+    check.expectEqual(filtered?.preset(id: "battery-hold"), nil, "a battery hold is dropped")
+    check.expectEqual(filtered?.preset(id: "good-hold")?.target ?? 0, 80, "a valid hold is kept")
+    check.expect(filtered?.preset(id: "good-curve")?.isHold == false, "a valid curve is kept")
+    check.expectEqual(filtered?.active ?? "", PresetLibrary.autoID, "a dropped active hold repairs to auto")
+
+    // Visibility depends on the machine: a system hold needs TVS0, and every hold waits for Ftst machines.
+    let withCustomHold = PresetLibrary(active: PresetLibrary.autoID,
+                                       presets: defaults.presets + [Preset(id: "custom-hold", name: "My Hold",
+                                                                           input: .cpu, points: [], target: 85)])
+    let all = withCustomHold.visiblePresets(hasSystem: true, hasForceTest: false)
+    check.expectEqual(all.count, withCustomHold.presets.count, "every preset is visible on a TVS0 machine without Ftst")
+    let noSystem = withCustomHold.visiblePresets(hasSystem: false, hasForceTest: false)
+    check.expect(!noSystem.contains { $0.id == PresetLibrary.quietHoldID }, "quiet45 is hidden without TVS0")
+    check.expect(noSystem.contains { $0.id == "custom-hold" }, "a non-system hold is visible without TVS0")
+    let ftst = withCustomHold.visiblePresets(hasSystem: true, hasForceTest: true)
+    check.expect(ftst.allSatisfy { !$0.isHold }, "every hold is hidden with Ftst")
+    check.expectEqual(ftst.map(\.id), ["silent", "balanced", "performance", "full"], "Ftst keeps every curve preset")
+}
 
 // MARK: - HelperCommand round trips
 
@@ -404,7 +512,8 @@ do {
     let library = try? PresetStore(url: url).load()
     let after = try? Data(contentsOf: url)
     check.expect(before != nil && before == after, "loading an existing v1 presets file leaves its bytes untouched")
-    check.expect(library?.presets.allSatisfy { $0.input == .max } ?? false, "the v1 presets keep their max input")
+    check.expect(library?.presets.filter { !$0.isHold }.allSatisfy { $0.input == .max } ?? false,
+                 "the v1 curve presets keep their max input")
 }
 
 // MARK: - Memory pressure

@@ -17,8 +17,20 @@ final class CurveEditorPanel: NSView {
         }
     }
 
+    /// How a hold preset names what it holds, inside a sentence.
+    static func holdSourceName(for input: FanControlInput) -> String {
+        switch input {
+        case .max: return "the hottest CPU/GPU"
+        case .cpu: return "the CPU"
+        case .gpu: return "the GPU"
+        case .battery: return "the battery"
+        case .system: return "the system temperature"
+        }
+    }
+
     private let store: PresetStore
     private let graph = CurveEditorView(frame: .zero)
+    private let holdView: HoldTargetView
     private let picker: NSView
     private let nameEditor = PresetNameEditor()
     private let inputPopup = NSPopUpButton(frame: .zero, pullsDown: false)
@@ -34,10 +46,13 @@ final class CurveEditorPanel: NSView {
     private var draft: Preset?
     private var deleteArmed = false
     private var lastError: String?
+    private var batteryAvailable = true
+    private var systemAvailable = true
 
     init(store: PresetStore, picker: NSView, width: CGFloat) {
         self.store = store
         self.picker = picker
+        self.holdView = HoldTargetView(width: width)
         super.init(frame: .zero)
         configure(width: width)
     }
@@ -57,13 +72,32 @@ final class CurveEditorPanel: NSView {
     /// A desktop Mac has no battery sensor: the Battery input is hidden, unless the preset already follows it, which
     /// then reads no temperature and leaves the fans to macOS.
     func setBatteryAvailable(_ available: Bool) {
-        guard let item = inputPopup.item(at: FanControlInput.allCases.firstIndex(of: .battery) ?? -1) else { return }
-        let hidden = !available && draft?.input != .battery
-        if item.isHidden != hidden { item.isHidden = hidden }
+        batteryAvailable = available
+        refreshInputItems()
     }
 
-    func updateLive(temperature: Float?, speed: FanSpeedFormat) {
+    /// A Mac without TVS0 cannot hold the system temperature.
+    func setSystemAvailable(_ available: Bool) {
+        systemAvailable = available
+        refreshInputItems()
+    }
+
+    func updateLive(temperature: Float?, speed: FanSpeedFormat, holding: Bool = false) {
         graph.setLive(temperature: temperature, speed: speed)
+        holdView.updateLive(temperature: temperature, holding: holding)
+    }
+
+    /// A hold never follows the battery (too slow to steer a loop) and needs TVS0 for the system input.
+    private func refreshInputItems() {
+        let isHold = draft?.isHold ?? false
+        let hiddenInputs: [(FanControlInput, Bool)] = [
+            (.battery, isHold || (!batteryAvailable && draft?.input != .battery)),
+            (.system, isHold && !systemAvailable && draft?.input != .system),
+        ]
+        for (input, hidden) in hiddenInputs {
+            guard let item = inputPopup.item(at: FanControlInput.allCases.firstIndex(of: input) ?? -1) else { continue }
+            if item.isHidden != hidden { item.isHidden = hidden }
+        }
     }
 
     func report(_ message: String) {
@@ -91,6 +125,7 @@ final class CurveEditorPanel: NSView {
     private func configure(width: CGFloat) {
         graph.onEdit = { [weak self] points in self?.graphEdited(points) }
         graph.onCommit = { [weak self] points in self?.graphCommitted(points) }
+        holdView.onTarget = { [weak self] target, committed in self?.targetChanged(target, committed: committed) }
 
         nameEditor.onCommit = { [weak self] name in self?.commitName(name) }
         nameEditor.onError = { [weak self] message in self?.fail(message) }
@@ -137,7 +172,7 @@ final class CurveEditorPanel: NSView {
 
         // The graph and the text that replaces it share one slot, so the picker below never moves when the preset changes.
         let graphSlot = NSView()
-        for view in [graph, placeholder] {
+        for view in [graph, holdView, placeholder] {
             view.translatesAutoresizingMaskIntoConstraints = false
             graphSlot.addSubview(view)
         }
@@ -147,6 +182,10 @@ final class CurveEditorPanel: NSView {
             graph.bottomAnchor.constraint(equalTo: graphSlot.bottomAnchor),
             graph.leadingAnchor.constraint(equalTo: graphSlot.leadingAnchor),
             graph.trailingAnchor.constraint(equalTo: graphSlot.trailingAnchor),
+            holdView.topAnchor.constraint(equalTo: graphSlot.topAnchor),
+            holdView.bottomAnchor.constraint(equalTo: graphSlot.bottomAnchor),
+            holdView.leadingAnchor.constraint(equalTo: graphSlot.leadingAnchor),
+            holdView.trailingAnchor.constraint(equalTo: graphSlot.trailingAnchor),
             placeholder.centerYAnchor.constraint(equalTo: graphSlot.centerYAnchor),
             placeholder.leadingAnchor.constraint(equalTo: graphSlot.leadingAnchor),
             placeholder.trailingAnchor.constraint(equalTo: graphSlot.trailingAnchor),
@@ -177,13 +216,21 @@ final class CurveEditorPanel: NSView {
             return
         }
         setTextOnly(false)
+        graph.isHidden = draft.isHold
+        holdView.isHidden = !draft.isHold
+        refreshInputItems()
 
         let builtIn = draft.isBuiltIn
-        graph.isEditable = !builtIn
-        graph.setPoints(draft.points)
+        if draft.isHold {
+            holdView.show(draft)
+        } else {
+            graph.isEditable = !builtIn
+            graph.setPoints(draft.points)
+        }
         nameEditor.set(name: draft.name, isBuiltIn: builtIn)
         inputPopup.isEnabled = !builtIn
-        inputPopup.toolTip = builtIn ? "Built-in presets keep this setting" : "Temperature the curve follows"
+        inputPopup.toolTip = builtIn ? "Built-in presets keep this setting"
+            : (draft.isHold ? "Temperature the hold keeps" : "Temperature the curve follows")
         if let index = FanControlInput.allCases.firstIndex(of: draft.input), inputPopup.indexOfSelectedItem != index {
             inputPopup.selectItem(at: index)
         }
@@ -205,6 +252,7 @@ final class CurveEditorPanel: NSView {
 
     private func setTextOnly(_ textOnly: Bool) {
         graph.isHidden = textOnly
+        holdView.isHidden = true
         placeholder.isHidden = !textOnly
         nameRow.isHidden = textOnly
         buttonRow.isHidden = textOnly
@@ -223,11 +271,18 @@ final class CurveEditorPanel: NSView {
     }
 
     private func apply(_ preset: Preset) {
-        do {
-            try preset.curve.validate()
-        } catch {
-            fail("Invalid curve: \(error)")
-            return
+        if preset.isHold {
+            guard preset.isValid else {
+                fail("Invalid hold target")
+                return
+            }
+        } else {
+            do {
+                try preset.curve.validate()
+            } catch {
+                fail("Invalid curve: \(error)")
+                return
+            }
         }
         guard preset != store.library.preset(id: preset.id) else {
             draft = preset
@@ -273,6 +328,18 @@ final class CurveEditorPanel: NSView {
         apply(draft)
     }
 
+    /// The slider saves (and so re-sends HOLD) only on release, not on every step of a drag.
+    private func targetChanged(_ target: Double, committed: Bool) {
+        guard var draft, draft.isHold, !draft.isBuiltIn else { return }
+        draft.target = target
+        disarmDelete()
+        if committed {
+            apply(draft)
+        } else {
+            self.draft = draft
+        }
+    }
+
     private func commitName(_ name: String) {
         guard var draft else { return }
         draft.name = name
@@ -283,6 +350,10 @@ final class CurveEditorPanel: NSView {
         let index = inputPopup.indexOfSelectedItem
         guard var draft, FanControlInput.allCases.indices.contains(index) else { return }
         draft.input = FanControlInput.allCases[index]
+        if let target = draft.target {
+            let range = Preset.holdRange(for: draft.input)
+            draft.target = min(max(target, range.lowerBound), range.upperBound)
+        }
         disarmDelete()
         apply(draft)
     }
