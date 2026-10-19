@@ -52,7 +52,7 @@ public struct Preset: Codable, Equatable, Identifiable, Sendable {
             return "Full: both fans run at maximum speed.\n" + PresetLibrary.chooseHint
         }
         if isBuiltIn && isHold {
-            return "Built-in preset. Move the slider to save your own copy at another target."
+            return "Built-in preset. Drag the line to save your own copy at another target."
         }
         return isBuiltIn ? "Built-in preset. Duplicate it to make your own curve." : ""
     }
@@ -89,14 +89,14 @@ public struct PresetLibrary: Codable, Equatable, Sendable {
     public var customPresets: [Preset] { presets.filter { !$0.isBuiltIn } }
 
     /// Every built-in curve stops the fans (0 %) at or below 30 C. Full is not a curve: it holds both fans at
-    /// maximum speed whatever the temperature. Quiet 45 C is a hold, not a curve.
+    /// maximum speed whatever the temperature. Cruise 45 C holds a temperature instead of following a curve.
     public static let builtIns: [Preset] = [
         Preset(id: "silent", name: "Silent", input: .max, points: [
             CurvePoint(t: 30, p: 0), CurvePoint(t: 50, p: 5), CurvePoint(t: 70, p: 15),
             CurvePoint(t: 85, p: 45), CurvePoint(t: 95, p: 100),
         ]),
         // Holds the SMC's virtual system temperature where macOS Auto settles.
-        Preset(id: quietHoldID, name: "Quiet 45 °C", input: .system, points: [], target: 45),
+        Preset(id: quietHoldID, name: "Cruise 45 °C", input: .system, points: [], target: 45),
         Preset(id: "balanced", name: "Balanced", input: .max, points: [
             CurvePoint(t: 30, p: 0), CurvePoint(t: 45, p: 5), CurvePoint(t: 60, p: 20),
             CurvePoint(t: 75, p: 45), CurvePoint(t: 90, p: 80), CurvePoint(t: 95, p: 100),
@@ -111,6 +111,20 @@ public struct PresetLibrary: Codable, Equatable, Sendable {
     ]
 
     static let builtInIDs = Set(builtIns.map(\.id))
+
+    /// The name a cruise preset gets for a target, e.g. "Cruise 44.5 °C".
+    public static func cruiseName(_ target: Double) -> String {
+        "Cruise " + degrees(target)
+    }
+
+    /// 1.9 named the copies it made "Hold <target> °C"; they carry the cruise name now.
+    static func legacyHoldName(_ target: Double) -> String {
+        "Hold " + degrees(target)
+    }
+
+    private static func degrees(_ value: Double) -> String {
+        value == value.rounded() ? String(format: "%.0f \u{00B0}C", value) : String(format: "%.1f \u{00B0}C", value)
+    }
 
     public static func defaults() -> PresetLibrary {
         PresetLibrary(active: autoID, presets: builtIns)
@@ -157,8 +171,11 @@ public struct PresetLibrary: Codable, Equatable, Sendable {
         var taken = builtInIDs.union(valid.map(\.id))
         var active = stored.active
         var custom: [Preset] = []
-        for preset in valid {
+        for var preset in valid {
             guard preset.isBuiltIn else {
+                if let target = preset.target, preset.name == legacyHoldName(target) {
+                    preset.name = cruiseName(target)
+                }
                 custom.append(preset)
                 continue
             }

@@ -106,7 +106,7 @@ check.expectEqual(defaults.version, 3, "defaults version")
 check.expectEqual(defaults.active, PresetLibrary.autoID, "defaults active is auto")
 check.expectEqual(defaults.presets.count, 5, "defaults has 5 presets")
 check.expectEqual(defaults.presets.map { $0.id }, ["silent", "quiet45", "balanced", "performance", "full"], "defaults ids")
-check.expectEqual(defaults.presets.map { $0.name }, ["Silent", "Quiet 45 °C", "Balanced", "Performance", "Full"], "defaults names")
+check.expectEqual(defaults.presets.map { $0.name }, ["Silent", "Cruise 45 °C", "Balanced", "Performance", "Full"], "defaults names")
 let silentPreset = defaults.preset(id: "silent")
 check.expect(silentPreset != nil, "silent preset exists")
 check.expectEqual(silentPreset?.points ?? [], [
@@ -138,8 +138,29 @@ let maxInput = silentPreset!.input
 
 // Hold presets keep a target instead of a curve.
 let quiet = defaults.preset(id: PresetLibrary.quietHoldID)
-check.expect(quiet != nil, "the Quiet 45 °C preset exists")
-check.expectEqual(quiet?.name ?? "", "Quiet 45 °C", "quiet preset name")
+check.expect(quiet != nil, "the Cruise 45 °C preset exists")
+check.expectEqual(quiet?.name ?? "", "Cruise 45 °C", "cruise preset name")
+
+// 1.9 named its copies "Hold <target> °C"; loading renames exactly those, and leaves a name the user chose.
+do {
+    let stored = PresetLibrary(active: "custom-7", presets: [
+        Preset(id: "custom-7", name: "Hold 44.5 °C", input: .system, points: [], target: 44.5),
+        Preset(id: "custom-8", name: "Hold 46 °C", input: .system, points: [], target: 46),
+        Preset(id: "custom-9", name: "Night", input: .system, points: [], target: 42),
+        Preset(id: "custom-10", name: "Hold 45 °C", input: .system, points: [], target: 47),
+    ])
+    let url = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("openfan-cruise-\(getpid()).json")
+    try? JSONEncoder().encode(stored).write(to: url)
+    let store = PresetStore(url: url)
+    let merged = (try? store.load()) ?? PresetLibrary.defaults()
+    try? FileManager.default.removeItem(at: url)
+    check.expectEqual(merged.preset(id: "custom-7")?.name, "Cruise 44.5 °C", "a 1.9 half-degree copy is renamed")
+    check.expectEqual(merged.preset(id: "custom-8")?.name, "Cruise 46 °C", "a 1.9 whole-degree copy is renamed")
+    check.expectEqual(merged.preset(id: "custom-9")?.name, "Night", "a chosen name is kept")
+    check.expectEqual(merged.preset(id: "custom-10")?.name, "Hold 45 °C", "a name that does not match its target is kept")
+    check.expectEqual(merged.active, "custom-7", "the active preset survives the rename")
+    check.expectEqual(PresetLibrary.cruiseName(44.5), "Cruise 44.5 °C", "cruise name with a half degree")
+}
 check.expectEqual(quiet?.isBuiltIn ?? false, true, "quiet preset is built in")
 check.expectEqual(quiet?.isHold ?? false, true, "quiet preset is a hold")
 check.expect(quiet?.input == .system, "quiet preset holds the system temperature")
