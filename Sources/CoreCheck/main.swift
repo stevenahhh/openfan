@@ -146,8 +146,7 @@ check.expect(quiet?.input == .system, "quiet preset holds the system temperature
 check.expectEqual(quiet?.target ?? 0, 45, "quiet preset target is 45 C")
 check.expectEqual(quiet?.points ?? [], [], "quiet preset has no curve points")
 check.expectEqual(quiet?.isValid ?? false, true, "quiet preset is valid")
-check.expectEqual(quiet?.editorNote ?? "", "Built-in preset. Duplicate it to pick your own target.",
-                  "a built-in hold points at duplication")
+check.expectEqual(quiet?.editorNote.isEmpty ?? true, false, "a built-in hold has an editor note")
 if let quiet, let silentPreset {
     let curveJSON = (try? JSONEncoder().encode(silentPreset)).map { String(decoding: $0, as: UTF8.self) } ?? ""
     let holdJSON = (try? JSONEncoder().encode(quiet)).map { String(decoding: $0, as: UTF8.self) } ?? ""

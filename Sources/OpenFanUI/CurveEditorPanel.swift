@@ -328,16 +328,32 @@ final class CurveEditorPanel: NSView {
         apply(draft)
     }
 
-    /// The slider saves (and so re-sends HOLD) only on release, not on every step of a drag.
+    /// The slider saves (and so re-sends HOLD) only on release, not on every step of a drag. Built-ins stay read-only:
+    /// releasing the slider on one saves and activates the user's own copy at the new target.
     private func targetChanged(_ target: Double, committed: Bool) {
-        guard var draft, draft.isHold, !draft.isBuiltIn else { return }
-        draft.target = target
+        guard var draft, draft.isHold else { return }
         disarmDelete()
-        if committed {
+        guard committed else { return }
+        guard draft.isBuiltIn else {
+            draft.target = target
             apply(draft)
-        } else {
-            self.draft = draft
+            return
         }
+        guard target != draft.target else { return }
+        var copy = store.library.newCustomPreset(copying: draft)
+        copy.name = store.library.freeName(based: "Hold \(HoldTargetView.degrees(target))")
+        copy.target = target
+        do {
+            try store.upsert(copy)
+            try store.setActive(copy.id)
+        } catch {
+            fail("Save failed: \(error.localizedDescription)")
+            return
+        }
+        lastError = nil
+        self.draft = copy
+        render()
+        onLibraryChange?()
     }
 
     private func commitName(_ name: String) {

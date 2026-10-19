@@ -52,7 +52,7 @@ public struct Preset: Codable, Equatable, Identifiable, Sendable {
             return "Full: both fans run at maximum speed.\n" + PresetLibrary.chooseHint
         }
         if isBuiltIn && isHold {
-            return "Built-in preset. Duplicate it to pick your own target."
+            return "Built-in preset. Move the slider to save your own copy at another target."
         }
         return isBuiltIn ? "Built-in preset. Duplicate it to make your own curve." : ""
     }
