@@ -32,7 +32,7 @@
     </dict>
     <!-- Raise with every change to OpenFanHelper: the app then offers Update Helper. -->
     <key>OpenFanHelperRevision</key>
-    <string>2</string>
+    <string>3</string>
     <key>LSMinimumSystemVersion</key>
     <string>14.0</string>
     <key>LSUIElement</key>
