@@ -75,6 +75,10 @@ final class HelperDaemon {
     private var lastTemperature: Double?
     private var lastTargets: [Int: Float] = [:]
     private var loggedMode: HelperMode = .auto
+    private var systemInputWatch = SystemInputWatch()
+    private var systemInputStuck = false
+    /// Monotonic timestamp of the previous hold tick; nil starts a new hold session at dt 1.0.
+    private var lastControlTick: UInt64?
 
     private var powerRoot: io_connect_t = 0
     private var powerPort: IONotificationPortRef?
@@ -192,6 +196,25 @@ final class HelperDaemon {
             logLine("command FIXED \(HelperCommand.number(percent)) from connection \(connection.id)")
             beginControl(connection, input: .max)
             connection.send("OK")
+        case let .hold(input, target):
+            guard !monitorOnly else { connection.send("ERR monitor"); return }
+            if input == .system && !telemetry.hasSystem {
+                connection.send("ERR no system sensor")
+                return
+            }
+            do {
+                try controller.setHold(target: target, input: input,
+                                       config: telemetry.hasForceTest ? .forFtstMachines() : HoldConfig())
+            } catch {
+                connection.send("ERR \(error)")
+                return
+            }
+            logLine("command HOLD \(input.rawValue) \(HelperCommand.number(target)) from connection \(connection.id)")
+            systemInputWatch = SystemInputWatch()
+            systemInputStuck = false
+            lastControlTick = nil
+            beginControl(connection, input: input)
+            connection.send("OK")
         }
     }
 
@@ -241,11 +264,41 @@ final class HelperDaemon {
         guard !asleep else { return }
 
         // The panic latch always needs the hottest CPU/GPU sensor; the battery only matters to a battery curve.
-        let reading = telemetry.read(activeInput == .battery ? [.cpu, .gpu, .battery, .fans] : [.cpu, .gpu, .fans])
+        var sensors: SensorSet = [.cpu, .gpu, .fans]
+        if activeInput == .battery { sensors = [.cpu, .gpu, .battery, .fans] }
+        if activeInput == .system { sensors = [.cpu, .gpu, .system, .fans] }
+        let reading = telemetry.read(sensors)
         let inputs = reading.controlInputs(for: activeInput)
-        let temperature = inputs.temperature
+
+        let now = nowNanos()
+        var dt: Double?
+        if controller.mode == .hold {
+            if let last = lastControlTick {
+                dt = Double(now &- last) / 1_000_000_000
+            }
+            lastControlTick = now
+        } else {
+            lastControlTick = nil
+        }
+
+        var temperature = inputs.temperature
+        if controller.mode == .hold, activeInput == .system {
+            let watched = systemInputWatch.check(system: temperature.map { Double($0) },
+                                                 die: inputs.safety.map { Double($0) },
+                                                 now: Double(now) / 1_000_000_000)
+            if watched == nil {
+                if !systemInputStuck {
+                    logLine("system temperature stuck or missing")
+                    systemInputStuck = true
+                }
+                temperature = nil
+            } else {
+                systemInputStuck = false
+            }
+        }
+
         let observations = reading.fans.map { FanObservation(rpm: $0.rpm, manual: $0.manual) }
-        let actions = controller.tick(temperature: temperature, safetyTemperature: inputs.safety, fans: observations)
+        let actions = controller.tick(temperature: temperature, safetyTemperature: inputs.safety, fans: observations, dt: dt)
 
         // Strictly in the order returned: a fan's setTarget always precedes its setManual.
         for action in actions {
@@ -508,6 +561,8 @@ final class HelperDaemon {
             // systemWillNotSleep matters: canSystemSleep alone does not mean the machine sleeps.
             if asleep {
                 asleep = false
+                controller.restartHold()
+                lastControlTick = nil
                 logLine("wake: the next tick re-applies control")
             }
         default:

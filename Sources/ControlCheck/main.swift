@@ -375,4 +375,24 @@ do {
 
 runHoldLoopChecks(check)
 
+// 17. System input: TVS0 drives the curve only while a die sensor watches it.
+do {
+    let withSystem = SensorReading(cpu: 60, gpu: 55, battery: 30, fans: [], system: 44)
+    let inputs = withSystem.controlInputs(for: .system)
+    check.expectEqual(inputs.temperature, 44, "system input uses TVS0")
+    check.expectEqual(inputs.safety, 60, "system input still guards on the hottest die")
+
+    let noSystem = SensorReading(cpu: 60, gpu: 55, battery: 30, fans: [], system: nil)
+    check.expectEqual(noSystem.controlInputs(for: .system).temperature, nil, "missing TVS0 yields no curve temperature")
+
+    let noDie = SensorReading(cpu: nil, gpu: nil, battery: 30, fans: [], system: 44)
+    let noDieInputs = noDie.controlInputs(for: .system)
+    check.expectEqual(noDieInputs.temperature, nil, "no die sensor means no control temperature")
+    check.expectEqual(noDieInputs.safety, nil, "no die sensor means no safety temperature")
+
+    check.expectEqual(FanControlInput(rawValue: "system"), .system, "system input round-trips through its raw value")
+}
+
+runSystemInputWatchChecks(check)
+
 exit(check.summary())

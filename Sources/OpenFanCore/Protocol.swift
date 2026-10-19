@@ -32,13 +32,19 @@ public enum HelperPaths {
 
 /// One line-protocol command, newline terminated over the Unix socket.
 ///
-/// PING | STATUS | AUTO | CURVE <max|cpu|gpu|battery> <t:p,t:p,...> | FIXED <percent>
+/// PING | STATUS | AUTO | CURVE <max|cpu|gpu|battery> <t:p,t:p,...> | FIXED <percent> |
+/// HOLD <max|cpu|gpu|system> <targetC>
 public enum HelperCommand: Equatable, Sendable {
     case ping
     case status
     case auto
     case curve(input: FanControlInput, points: [CurvePoint])
     case fixed(percent: Double)
+    case hold(input: FanControlInput, target: Double)
+
+    /// Temperatures a hold targets. Below 20 C the fans would be inaudible anyway; above 110 C
+    /// the machine is already throttling, so such a target is far more likely a typo than intent.
+    public static let holdTargetRange: ClosedRange<Double> = 20...110
 
     /// Parses one wire line. Rejects empty lines, over-long lines, unknown verbs, malformed bodies and
     /// non-finite / out-of-range numeric values (see ProtocolError).
@@ -84,6 +90,20 @@ public enum HelperCommand: Equatable, Sendable {
                 throw ProtocolError.badValue("fixed percent outside 0...100: \(parts[1])")
             }
             return .fixed(percent: percent)
+        case "HOLD":
+            guard parts.count == 3 else { throw ProtocolError.malformed("HOLD needs <input> <target>") }
+            guard let input = FanControlInput(rawValue: parts[1]) else {
+                throw ProtocolError.badValue("unknown hold input \(parts[1])")
+            }
+            // The battery reads far too slowly to steer a control loop.
+            guard input != .battery else { throw ProtocolError.badValue("hold cannot follow the battery") }
+            guard let target = Double(parts[2]), target.isFinite else {
+                throw ProtocolError.badValue("hold target is not a finite number: \(parts[2])")
+            }
+            guard holdTargetRange.contains(target) else {
+                throw ProtocolError.badValue("hold target outside \(number(holdTargetRange.lowerBound))...\(number(holdTargetRange.upperBound)): \(parts[2])")
+            }
+            return .hold(input: input, target: target)
         default:
             throw ProtocolError.unknownCommand(verb)
         }
@@ -122,6 +142,8 @@ public enum HelperCommand: Equatable, Sendable {
             return "CURVE \(input.rawValue) \(list)"
         case .fixed(let percent):
             return "FIXED \(Self.number(percent))"
+        case .hold(let input, let target):
+            return "HOLD \(input.rawValue) \(Self.number(target))"
         }
     }
 

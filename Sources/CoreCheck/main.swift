@@ -292,6 +292,13 @@ expectRoundTrip("CURVE lowercase verb", "curve max 30:0,90:100",
                 serializedAs: "CURVE max 30:0,90:100")
 expectRoundTrip("FIXED int", "FIXED 40", serializedAs: "FIXED 40")
 expectRoundTrip("FIXED decimal", "FIXED 62.5", serializedAs: "FIXED 62.50")
+expectRoundTrip("HOLD system", "HOLD system 45", serializedAs: "HOLD system 45")
+expectRoundTrip("HOLD cpu decimal", "HOLD cpu 72.25", serializedAs: "HOLD cpu 72.25")
+expectRoundTrip("HOLD lowercase verb", "hold max 85.5", serializedAs: "HOLD max 85.50")
+let holdSystem = check.expectNoThrow("HOLD system parses") { try HelperCommand.parse("HOLD system 45") }
+check.expectEqual(holdSystem, HelperCommand.hold(input: .system, target: 45), "HOLD system 45 parses to .hold(.system, 45)")
+let holdMax = check.expectNoThrow("HOLD lowercase verb parses") { try HelperCommand.parse("hold max 85.5") }
+check.expectEqual(holdMax, HelperCommand.hold(input: .max, target: 85.5), "hold max 85.5 parses to .hold(.max, 85.5)")
 
 // MARK: - HelperCommand rejections
 
@@ -327,6 +334,15 @@ expectProtoError("FIXED over 100", .badValue("fixed percent outside 0...100: 101
 expectProtoError("FIXED negative", .badValue("fixed percent outside 0...100: -1"), "FIXED -1")
 expectProtoError("FIXED non-numeric", .badValue("fixed percent is not a finite number: abc"), "FIXED abc")
 expectProtoError("FIXED non-finite", .badValue("fixed percent is not a finite number: nan"), "FIXED nan")
+expectProtoError("HOLD no args", .malformed("HOLD needs <input> <target>"), "HOLD system")
+expectProtoError("HOLD too many args", .malformed("HOLD needs <input> <target>"), "HOLD system 45 1")
+expectProtoError("HOLD battery", .badValue("hold cannot follow the battery"), "HOLD battery 40")
+expectProtoError("HOLD unknown input", .badValue("unknown hold input bogus"), "HOLD bogus 45")
+expectProtoError("HOLD non-numeric", .badValue("hold target is not a finite number: abc"), "HOLD system abc")
+expectProtoError("HOLD nan", .badValue("hold target is not a finite number: nan"), "HOLD system nan")
+expectProtoError("HOLD inf", .badValue("hold target is not a finite number: inf"), "HOLD system inf")
+expectProtoError("HOLD below range", .badValue("hold target outside 20...110: 19.9"), "HOLD system 19.9")
+expectProtoError("HOLD above range", .badValue("hold target outside 20...110: 110.1"), "HOLD system 110.1")
 
 // MARK: - HelperStatus serialize / parse
 
@@ -348,6 +364,9 @@ let statusPanic = HelperStatus(mode: .panic, inputTemperature: 96, targetRPM: [7
 check.expectEqual(HelperStatus.parse(statusPanic.serialized), statusPanic, "status panic round trip")
 let statusFixed = HelperStatus(mode: .fixed, inputTemperature: 50, targetRPM: [5000, 5000], writes: 3)
 check.expectEqual(HelperStatus.parse(statusFixed.serialized), statusFixed, "status fixed round trip")
+let statusHold = HelperStatus(mode: .hold, inputTemperature: 45, targetRPM: [3166, 3168], writes: 9)
+check.expectEqual(statusHold.serialized, "OK mode=hold temp=45.0 rpm=3166.0,3168.0 writes=9", "status hold serialized")
+check.expectEqual(HelperStatus.parse(statusHold.serialized), statusHold, "status hold round trip")
 
 check.expect(HelperStatus.parse("") == nil, "status parse rejects empty")
 check.expect(HelperStatus.parse("garbage") == nil, "status parse rejects junk")
