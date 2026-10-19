@@ -13,6 +13,7 @@ final class CurveEditorPanel: NSView {
         case .cpu: return "CPU"
         case .gpu: return "GPU"
         case .battery: return "Battery (average)"
+        case .system: return "System"
         }
     }
 

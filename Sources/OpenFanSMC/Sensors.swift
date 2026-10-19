@@ -9,6 +9,8 @@ public enum FanControlInput: String, Codable, CaseIterable, Sendable {
     case gpu
     /// Mean of every battery temperature sensor.
     case battery
+    /// The SMC's virtual system temperature TVS0, the value macOS Auto holds near 45 C.
+    case system
 }
 
 // MARK: - Chip generation
@@ -96,6 +98,11 @@ public enum SensorCatalog {
         return usable.reduce(0, +) / Float(usable.count)
     }
 
+    /// Probed once at discovery so a Mac without it never pays the read cost.
+    public static let systemKey = "TVS0"
+    /// Plausible TVS0 values; a reading outside this window is a failed read, not a temperature.
+    public static let systemRange: ClosedRange<Float> = 15...70
+
     /// Readings outside this window (or NaN) are discarded.
     public static let temperatureFloor: Float = 0
     public static let temperatureCeiling: Float = 130
@@ -153,12 +160,15 @@ public struct SensorReading: Equatable, Sendable {
     /// Mean of the battery sensors.
     public let battery: Float?
     public let fans: [FanReading]
+    /// TVS0, the filtered composite macOS Auto follows; it is not a die sensor.
+    public let system: Float?
 
-    public init(cpu: Float?, gpu: Float?, battery: Float? = nil, fans: [FanReading]) {
+    public init(cpu: Float?, gpu: Float?, battery: Float? = nil, fans: [FanReading], system: Float? = nil) {
         self.cpu = cpu
         self.gpu = gpu
         self.battery = battery
         self.fans = fans
+        self.system = system
     }
 
     /// The temperature a preset's input selects.
@@ -167,6 +177,7 @@ public struct SensorReading: Equatable, Sendable {
         case .cpu: return cpu
         case .gpu: return gpu
         case .battery: return battery
+        case .system: return system
         case .max:
             switch (cpu, gpu) {
             case let (c?, g?): return max(c, g)
@@ -193,7 +204,8 @@ public struct SensorSet: OptionSet, Sendable {
     public static let fans = SensorSet(rawValue: 8)
     /// What the fans were told to do. Only a display wants it; the control loop watches the fans' real speed.
     public static let fanTargets = SensorSet(rawValue: 16)
-    public static let all: SensorSet = [.cpu, .gpu, .battery, .fans, .fanTargets]
+    public static let system = SensorSet(rawValue: 32)
+    public static let all: SensorSet = [.cpu, .gpu, .battery, .fans, .fanTargets, .system]
 }
 
 // MARK: - Reader
@@ -203,6 +215,7 @@ public final class Telemetry {
     public private(set) var fans: [FanInfo] = []
     /// False on a desktop: no battery sensor exists.
     public let hasBattery: Bool
+    public let hasSystem: Bool
     /// M3 and M4 MacBook Pros keep the fans in system mode until the force-test key `Ftst` is set.
     public let hasForceTest: Bool
 
@@ -221,6 +234,7 @@ public final class Telemetry {
         self.presentGPUKeys = SensorCatalog.gpuKeys.filter { smc.keyExists($0) }
         self.presentBatteryKeys = SensorCatalog.batteryKeys.filter { smc.keyExists($0) }
         self.hasBattery = !presentBatteryKeys.isEmpty
+        self.hasSystem = smc.keyExists(SensorCatalog.systemKey)
         self.hasForceTest = smc.keyExists("Ftst")
 
         // FNum is a ui8 key on this platform; fall back to a ui32 variant if that is what is present.
@@ -265,7 +279,10 @@ public final class Telemetry {
         let battery = sensors.contains(.battery)
             ? SensorCatalog.batteryMean(presentBatteryKeys.compactMap { try? smc.readFloat($0) })
             : nil
-        return SensorReading(cpu: cpu, gpu: gpu, battery: battery, fans: readings)
+        let system = sensors.contains(.system) && hasSystem
+            ? (try? smc.readFloat(SensorCatalog.systemKey)).flatMap(validSystem)
+            : nil
+        return SensorReading(cpu: cpu, gpu: gpu, battery: battery, fans: readings, system: system)
     }
 
     // MARK: Internals
@@ -278,6 +295,11 @@ public final class Telemetry {
             best = best.map { max($0, value) } ?? value
         }
         return best
+    }
+
+    private func validSystem(_ value: Float) -> Float? {
+        guard value.isFinite, SensorCatalog.systemRange.contains(value) else { return nil }
+        return value
     }
 
     private func validTemperature(_ value: Float) -> Float? {
