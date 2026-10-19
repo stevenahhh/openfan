@@ -2,8 +2,8 @@ import AppKit
 import OpenFanCore
 import OpenFanSMC
 
-/// What the editor shows in place of the graph for a hold preset: what it holds, the live reading, and, for the
-/// user's own presets, a slider for the target.
+/// What the editor shows in place of the graph for a hold preset: what it holds, the live reading and a slider for
+/// the target (on a built-in, releasing the slider saves the user's own copy).
 final class HoldTargetView: NSView {
     /// Called while the slider moves (`committed` false) and once when it is released (`committed` true).
     var onTarget: ((Double, _ committed: Bool) -> Void)?
@@ -69,7 +69,6 @@ final class HoldTargetView: NSView {
         slider.allowsTickMarkValuesOnly = true
         slider.tickMarkPosition = .below
         if slider.doubleValue != target { slider.doubleValue = target }
-        sliderRow.isHidden = preset.isBuiltIn
         note.isHidden = preset.input != .system
         refreshText(target: target)
     }

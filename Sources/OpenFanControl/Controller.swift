@@ -55,6 +55,13 @@ public final class FanController {
     /// Target the active hold follows; nil unless hold is the current mode.
     public var holdTarget: Double? { mode == .hold ? holdLoop?.target : nil }
 
+    /// The hold loop's internal state for the helper log; nil unless hold is the current mode.
+    public var holdState: HoldState? {
+        guard mode == .hold, let loop = holdLoop else { return nil }
+        return HoldState(released: loop.isReleased, latched: loop.isLatched, percent: loop.commandedPercent,
+                         diePercent: loop.diePercent, integrator: loop.integrator)
+    }
+
     public init(fans: [FanInfo], config: ControllerConfig = ControllerConfig()) {
         self.fans = fans
         self.config = config

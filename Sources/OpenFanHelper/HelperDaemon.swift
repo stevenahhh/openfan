@@ -79,6 +79,9 @@ final class HelperDaemon {
     private var systemInputStuck = false
     /// Monotonic timestamp of the previous hold tick; nil starts a new hold session at dt 1.0.
     private var lastControlTick: UInt64?
+    /// Last hold state written to the log, and when; a hold logs its transitions and one summary a minute.
+    private var loggedHold: HoldState?
+    private var lastHoldSummary: UInt64 = 0
 
     private var powerRoot: io_connect_t = 0
     private var powerPort: IONotificationPortRef?
@@ -213,6 +216,7 @@ final class HelperDaemon {
             systemInputWatch = SystemInputWatch()
             systemInputStuck = false
             lastControlTick = nil
+            loggedHold = nil
             beginControl(connection, input: input)
             connection.send("OK")
         }
@@ -323,6 +327,34 @@ final class HelperDaemon {
         }
         lastTemperature = temperature.map { (Double($0) * 100).rounded() / 100 }
         noteModeChange()
+        noteHold(temperature: temperature, die: inputs.safety, fans: reading.fans)
+    }
+
+    /// The hold loop's story for the log: every engage, release and die latch, plus one summary a minute while it
+    /// holds, so a tuning run can be read back without watching the screen.
+    private func noteHold(temperature: Float?, die: Float?, fans: [FanReading]) {
+        guard let state = controller.holdState, let target = controller.holdTarget else {
+            loggedHold = nil
+            return
+        }
+        let t = temperature.map { String(format: "%.2f", $0) } ?? "-"
+        let d = die.map { String(format: "%.1f", $0) } ?? "-"
+        let rpm = fans.map { $0.rpm.map { String(Int($0)) } ?? "-" }.joined(separator: "/")
+        let detail = String(format: "T=%@ target=%@ die=%@ p=%.1f%% die_p=%.1f%% I=%.2f rpm=%@",
+                            t, HelperCommand.number(target), d, state.percent, state.diePercent, state.integrator, rpm)
+        let previous = loggedHold
+        loggedHold = state
+        let now = nowNanos()
+        if previous == nil || previous?.released != state.released {
+            logLine(state.released ? "hold: released to macOS, \(detail)" : "hold: engaged, \(detail)")
+            lastHoldSummary = now
+        } else if previous?.latched != state.latched {
+            logLine(state.latched ? "hold: die latch ON, \(detail)" : "hold: die latch off, \(detail)")
+            lastHoldSummary = now
+        } else if now &- lastHoldSummary >= 60_000_000_000 {
+            logLine("hold: \(state.released ? "waiting" : "holding"), \(detail)")
+            lastHoldSummary = now
+        }
     }
 
     /// One SMC write. Every guard here backs a hard safety rule, whatever the controller returned.
@@ -486,7 +518,7 @@ final class HelperDaemon {
 
     private func currentStatus() -> HelperStatus {
         let mode = effectiveMode
-        let active = mode == .curve || mode == .fixed || mode == .panic
+        let active = mode == .curve || mode == .fixed || mode == .panic || mode == .hold
         let targets = fans.compactMap { lastTargets[$0.index] }
         return HelperStatus(
             mode: mode,
