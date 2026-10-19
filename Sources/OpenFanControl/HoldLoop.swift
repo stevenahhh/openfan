@@ -52,6 +52,15 @@ public struct HoldConfig: Equatable, Sendable {
     }
 }
 
+/// A read-only view of a hold loop, for logging and status.
+public struct HoldState: Equatable, Sendable {
+    public var released: Bool
+    public var latched: Bool
+    public var percent: Double
+    public var diePercent: Double
+    public var integrator: Double
+}
+
 /// What `HoldLoop` wants the caller to do this tick.
 public enum HoldDecision: Equatable, Sendable {
     /// Stay released: nothing is written.
