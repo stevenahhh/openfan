@@ -44,9 +44,13 @@ public final class FanController {
     private var curve: FanCurve?
     private var input: FanControlInput?
     private var fixedPercent: Double?
+    private var holdLoop: HoldLoop?
     private var panicked = false
     private var usedTemperature: Float?
     private var lastTargets: [Float?]
+
+    /// Input the active hold follows; nil unless hold is the current mode.
+    public var holdInput: FanControlInput? { mode == .hold ? input : nil }
 
     public init(fans: [FanInfo], config: ControllerConfig = ControllerConfig()) {
         self.fans = fans
@@ -64,6 +68,7 @@ public final class FanController {
         self.curve = curve
         self.input = input
         self.fixedPercent = nil
+        self.holdLoop = nil
         self.panicked = false
         self.usedTemperature = nil
         self.lastTargets = Array(repeating: nil, count: fans.count)
@@ -77,10 +82,27 @@ public final class FanController {
         self.fixedPercent = percent
         self.curve = nil
         self.input = nil
+        self.holdLoop = nil
         self.panicked = false
         self.usedTemperature = nil
         self.lastTargets = Array(repeating: nil, count: fans.count)
         self.mode = .fixed
+    }
+
+    public func setHold(target: Double, input: FanControlInput, config: HoldConfig = HoldConfig()) throws {
+        guard target.isFinite,
+              target >= Double(SensorCatalog.temperatureFloor),
+              target <= Double(SensorCatalog.temperatureCeiling) else {
+            throw ProtocolError.badValue("hold target must be finite and within \(SensorCatalog.temperatureFloor)...\(SensorCatalog.temperatureCeiling)")
+        }
+        self.holdLoop = HoldLoop(target: target, config: config)
+        self.input = input
+        self.curve = nil
+        self.fixedPercent = nil
+        self.panicked = false
+        self.usedTemperature = nil
+        self.lastTargets = Array(repeating: nil, count: fans.count)
+        self.mode = .hold
     }
 
     public func noteWriteFailure(_ reason: String) {
@@ -93,8 +115,9 @@ public final class FanController {
     ///   - safetyTemperature: the hottest CPU/GPU sensor. The panic latch watches the larger of the two, so an
     ///     input that runs cool (battery, a single die) can never hide an overheating SoC. Nil or an invalid
     ///     value leaves the latch on `temperature` alone.
-    public func tick(temperature: Float?, safetyTemperature: Float? = nil, fans observations: [FanObservation]) -> [FanAction] {
-        guard mode == .curve || mode == .fixed || mode == .panic else {
+    ///   - dt: seconds since the previous hold tick; nil uses 1.0. Ignored outside hold mode.
+    public func tick(temperature: Float?, safetyTemperature: Float? = nil, fans observations: [FanObservation], dt: Double? = nil) -> [FanAction] {
+        guard mode == .curve || mode == .fixed || mode == .panic || mode == .hold else {
             return []
         }
 
@@ -109,6 +132,22 @@ public final class FanController {
             mode = .auto
             clearControl()
             return actions
+        }
+
+        if mode == .hold, var loop = holdLoop {
+            let die: Double?
+            if let safety = safetyTemperature, safety.isFinite,
+               safety >= SensorCatalog.temperatureFloor, safety <= SensorCatalog.temperatureCeiling {
+                die = Double(safety)
+            } else {
+                die = nil
+            }
+            let decision = loop.tick(temperature: Double(t),
+                                     die: die,
+                                     actualPercent: holdActualPercent(observations),
+                                     dt: dt ?? 1.0)
+            holdLoop = loop
+            return holdActions(decision, observations: observations)
         }
 
         var hottest = t
@@ -182,9 +221,49 @@ public final class FanController {
         curve = nil
         input = nil
         fixedPercent = nil
+        holdLoop = nil
         panicked = false
         usedTemperature = nil
         lastTargets = Array(repeating: nil, count: fans.count)
+    }
+
+    /// Fan 0's observed rpm as a percent of its own range. Nil below `Mn` or when the reading is missing.
+    private func holdActualPercent(_ observations: [FanObservation]) -> Double? {
+        guard let fan = fans.first else { return nil }
+        let observation = observation(at: 0, in: observations)
+        guard let rpm = observation.rpm, rpm.isFinite, rpm >= fan.minRPM else { return nil }
+        let span = fan.maxRPM - fan.minRPM
+        guard span > 0 else { return 0 }
+        let percent = Double(rpm - fan.minRPM) / Double(span) * 100
+        return min(max(percent, 0), 100)
+    }
+
+    private func holdActions(_ decision: HoldDecision, observations: [FanObservation]) -> [FanAction] {
+        var actions: [FanAction] = []
+        switch decision {
+        case .none:
+            break
+        case .engage(let percent):
+            for fan in fans {
+                actions.append(.setTarget(fan: fan.index, rpm: fan.rpm(percent: percent)))
+                actions.append(.setManual(fan: fan.index, on: true))
+            }
+        case .hold(let percent, let write):
+            for (i, fan) in fans.enumerated() {
+                let observation = observation(at: i, in: observations)
+                if !observation.manual {
+                    actions.append(.setTarget(fan: fan.index, rpm: fan.rpm(percent: percent)))
+                    actions.append(.setManual(fan: fan.index, on: true))
+                } else if write {
+                    actions.append(.setTarget(fan: fan.index, rpm: fan.rpm(percent: percent)))
+                }
+            }
+        case .release:
+            for (i, fan) in fans.enumerated() where observation(at: i, in: observations).manual {
+                actions.append(.setManual(fan: fan.index, on: false))
+            }
+        }
+        return actions
     }
 
     private func observation(at index: Int, in observations: [FanObservation]) -> FanObservation {

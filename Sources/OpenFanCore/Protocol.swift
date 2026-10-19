@@ -136,6 +136,7 @@ public enum HelperMode: String, Equatable, Sendable, CaseIterable {
     case auto
     case curve
     case fixed
+    case hold
     case panic
     case monitor
 }

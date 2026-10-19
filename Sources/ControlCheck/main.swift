@@ -290,4 +290,89 @@ do {
     check.expectEqual(none.tick(temperature: 99, fans: []), [], "not even in panic")
 }
 
+// 16. Hold mode.
+do {
+    let n = 45.0
+
+    let invalid = FanController(fans: fans)
+    check.expectThrows("hold target 200 throws") { try invalid.setHold(target: 200, input: .max) }
+    check.expectThrows("hold target NaN throws") { try invalid.setHold(target: .nan, input: .max) }
+    check.expectEqual(invalid.mode, .auto, "rejected hold targets leave the mode untouched")
+
+    // A hot Mac engages both fans target-first on the first tick.
+    let c = FanController(fans: fans)
+    _ = check.expectNoThrow("valid hold accepted") { try c.setHold(target: n, input: .max) }
+    check.expectEqual(c.mode, .hold, "setHold sets mode .hold")
+    check.expectEqual(c.holdInput, FanControlInput.max, "hold input is exposed")
+    let actualPercent = (3000.0 - Double(fans[0].minRPM)) / Double(fans[0].maxRPM - fans[0].minRPM) * 100
+    let engaged = c.tick(temperature: Float(n + 3), fans: obs(manual: false))
+    check.expectEqual(c.mode, .hold, "hold stays .hold after engaging")
+    check.expectEqual(engaged.count, fans.count * 2, "hold engage emits target+manual for each fan")
+    for (i, fan) in fans.enumerated() {
+        check.expectEqual(engaged[i * 2], .setTarget(fan: fan.index, rpm: fan.rpm(percent: actualPercent)), "fan \(fan.index) hold target first")
+        check.expectEqual(engaged[i * 2 + 1], .setManual(fan: fan.index, on: true), "fan \(fan.index) hold manual second")
+    }
+    assertInRange("hold engage", engaged)
+    c.noteApplied(engaged)
+
+    // While holding, the first written tick emits targets and the next inside the dead band emits nothing.
+    let written = c.tick(temperature: Float(n + 3), fans: obs(manual: true))
+    check.expectEqual(written.count, fans.count, "a writing hold tick emits a target per fan")
+    assertInRange("hold write", written)
+    let quiet = c.tick(temperature: Float(n + 3), fans: obs(manual: true))
+    check.expectEqual(quiet, [], "a non-write hold tick emits no actions")
+
+    // macOS reclaiming a fan re-engages target-first even inside the dead band.
+    let reclaimed = c.tick(temperature: Float(n + 3), fans: obs(manual: false))
+    check.expectEqual(reclaimed.count, fans.count * 2, "a reclaimed fan re-engages target+manual")
+    for (i, fan) in fans.enumerated() {
+        if case let .setTarget(targetFan, _) = reclaimed[i * 2] {
+            check.expectEqual(targetFan, fan.index, "fan \(fan.index) re-engage target first")
+        } else {
+            check.expect(false, "fan \(fan.index) re-engage starts with a target")
+        }
+        check.expectEqual(reclaimed[i * 2 + 1], .setManual(fan: fan.index, on: true), "fan \(fan.index) re-engage manual second")
+    }
+    assertInRange("hold re-engage", reclaimed)
+
+    // A dead input releases manual fans and drops to auto.
+    let released = c.tick(temperature: nil, fans: obs(manual: true))
+    check.expectEqual(released, fans.map { .setManual(fan: $0.index, on: false) }, "nil temperature releases every manual fan while holding")
+    check.expectEqual(c.mode, .auto, "nil temperature drops hold to .auto")
+    check.expectEqual(c.holdInput, nil, "hold input is cleared with the mode")
+
+    // The die guard runs inside hold; a warm die does not panic or force Mx.
+    let die99 = FanController(fans: fans)
+    _ = check.expectNoThrow("valid hold accepted") { try die99.setHold(target: n, input: .max) }
+    let warm = die99.tick(temperature: Float(n - 10), safetyTemperature: 99, fans: obs(manual: true))
+    check.expectEqual(warm, [], "a 99 C die does not force Mx or panic")
+    check.expectEqual(die99.mode, .hold, "a 99 C die keeps hold mode")
+
+    // A fresh loop seeds its die EMA at 106 C and latches at Mx within one tick, without panic.
+    let die106 = FanController(fans: fans)
+    _ = check.expectNoThrow("valid hold accepted") { try die106.setHold(target: n, input: .max) }
+    let latched = die106.tick(temperature: Float(n - 10), safetyTemperature: 106, fans: obs(manual: true))
+    check.expectEqual(die106.mode, .hold, "a 106 C die keeps hold mode, not panic")
+    for fan in fans {
+        check.expect(latched.contains(.setTarget(fan: fan.index, rpm: fan.maxRPM)), "fan \(fan.index) forced to Mx by the hold die guard")
+    }
+    assertInRange("hold die guard", latched)
+
+    // setCurve leaves hold and returns to curve behaviour.
+    let back = FanController(fans: fans)
+    _ = check.expectNoThrow("valid hold accepted") { try back.setHold(target: n, input: .max) }
+    _ = back.tick(temperature: Float(n + 3), fans: obs(manual: true))
+    _ = check.expectNoThrow("curve after hold accepted") { try back.setCurve(steep, input: .max) }
+    check.expectEqual(back.mode, .curve, "setCurve after setHold returns to curve mode")
+    check.expectEqual(back.holdInput, nil, "setCurve clears the hold input")
+    let curveTick = back.tick(temperature: 60, fans: obs(manual: true))
+    check.expectEqual(back.mode, .curve, "curve ticks stay in curve mode")
+    for fan in fans {
+        check.expect(curveTick.contains(.setTarget(fan: fan.index, rpm: fan.rpm(percent: steep.percent(at: 60)))), "fan \(fan.index) follows the curve again")
+    }
+    assertInRange("curve after hold", curveTick)
+}
+
+runHoldLoopChecks(check)
+
 exit(check.summary())
