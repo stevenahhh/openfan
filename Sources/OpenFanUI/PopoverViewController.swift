@@ -221,7 +221,7 @@ public final class PopoverViewController: NSViewController {
 
         let temperature = editor.activeInput.flatMap { snapshot.reading?.input($0) }
         editor.updateLive(temperature: temperature, speed: FanSpeedFormat(fan: snapshot.fans.first, showsRPM: header.showsRPM),
-                          holding: snapshot.helperStatus?.mode == .hold)
+                          fanPercent: Self.fanPercent(snapshot))
     }
 
     private func resize() {
@@ -318,6 +318,14 @@ public final class PopoverViewController: NSViewController {
 
     @objc private func quitTapped(_ sender: Any?) {
         actions.quit()
+    }
+
+    /// Fan 0's real speed as a percent of its range; nil while it is stopped (below Mn) or unread.
+    private static func fanPercent(_ snapshot: LiveSnapshot) -> Double? {
+        guard let fan = snapshot.fans.first, fan.maxRPM > fan.minRPM,
+              let rpm = snapshot.reading?.fans.first(where: { $0.index == fan.index })?.rpm, rpm >= fan.minRPM
+        else { return nil }
+        return min(Double((rpm - fan.minRPM) / (fan.maxRPM - fan.minRPM)) * 100, 100)
     }
 
     private func warning(for snapshot: LiveSnapshot) -> String? {

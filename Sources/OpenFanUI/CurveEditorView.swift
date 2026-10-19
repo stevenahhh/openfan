@@ -11,6 +11,9 @@ final class CurveEditorView: NSView {
     /// Fires once an edit is finished: when a drag ends, and after an insert or a remove.
     var onCommit: (([CurvePoint]) -> Void)?
 
+    /// Fires when a drag of the cruise target line ends with a new target.
+    var onCruiseCommit: ((Double) -> Void)?
+
     /// Built-in presets are shown but cannot be dragged, extended or trimmed.
     var isEditable = true {
         didSet {
@@ -33,7 +36,42 @@ final class CurveEditorView: NSView {
     private let live = CurveLiveMarker()
     private var speed = FanSpeedFormat(fan: nil, showsRPM: false)
 
-    var plot: CurvePlot { CurvePlot(bounds: bounds) }
+    /// A cruise preset: the graph zooms to `axis`, draws the target as a line and lets it be dragged within `range`.
+    private var cruise: (target: Double, axis: ClosedRange<Double>, range: ClosedRange<Double>)?
+    private var cruiseDragging = false
+    private var cruiseHover = false
+    private var cruisePercent: Double?
+
+    var plot: CurvePlot {
+        guard let cruise else { return CurvePlot(bounds: bounds) }
+        return CurvePlot(bounds: bounds, tMin: cruise.axis.lowerBound, tMax: cruise.axis.upperBound)
+    }
+
+    /// Shows a cruise target instead of a curve, or nil to go back to curves.
+    func setCruise(target: Double, axis: ClosedRange<Double>, range: ClosedRange<Double>) {
+        if let cruise, cruise.target == target, cruise.axis == axis, cruise.range == range { return }
+        self.cruise = (target, axis, range)
+        cruiseDragging = false
+        needsDisplay = true
+        renderLive()
+    }
+
+    func clearCruise() {
+        guard cruise != nil else { return }
+        cruise = nil
+        cruiseDragging = false
+        cruiseHover = false
+        needsDisplay = true
+        renderLive()
+    }
+
+    /// The fans' real speed in percent of their range, nil while they are stopped; used only on a cruise preset.
+    func setCruisePercent(_ percent: Double?) {
+        let rounded = percent.map { ($0 * 10).rounded() / 10 }
+        guard rounded != cruisePercent else { return }
+        cruisePercent = rounded
+        renderLive()
+    }
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -95,7 +133,8 @@ final class CurveEditorView: NSView {
             dragIndex: dragIndex,
             hoverIndex: hoverIndex,
             speed: speed,
-            scale: window?.backingScaleFactor ?? 2
+            scale: window?.backingScaleFactor ?? 2,
+            cruise: cruise.map { CruiseMark(target: $0.target, active: cruiseDragging || cruiseHover) }
         ).draw()
     }
 
@@ -104,7 +143,8 @@ final class CurveEditorView: NSView {
     }
 
     private func renderLive() {
-        live.render(points: points, plot: plot, suppressed: dragIndex != nil)
+        live.render(points: points, plot: plot, suppressed: dragIndex != nil || cruiseDragging,
+                    cruise: cruise != nil, cruisePercent: cruisePercent)
     }
 
     private func hitIndex(at location: NSPoint) -> Int? {
@@ -137,12 +177,31 @@ final class CurveEditorView: NSView {
         trackingArea = area
     }
 
+    private func hitsCruise(_ location: NSPoint) -> Bool {
+        guard let cruise else { return false }
+        let mapping = plot
+        let x = mapping.point(t: cruise.target, p: 0).x
+        return abs(location.x - x) <= CurveStyle.hitRadius && location.y >= mapping.rect.minY && location.y <= mapping.rect.maxY
+    }
+
     override func mouseMoved(with event: NSEvent) {
+        if cruise != nil {
+            let hover = hitsCruise(convert(event.locationInWindow, from: nil))
+            if hover != cruiseHover {
+                cruiseHover = hover
+                needsDisplay = true
+            }
+            return
+        }
         guard isEditable else { return }
         updateHover(to: hitIndex(at: convert(event.locationInWindow, from: nil)))
     }
 
     override func mouseExited(with event: NSEvent) {
+        if cruiseHover {
+            cruiseHover = false
+            needsDisplay = true
+        }
         updateHover(to: nil)
     }
 
@@ -153,6 +212,14 @@ final class CurveEditorView: NSView {
     }
 
     override func mouseDown(with event: NSEvent) {
+        if cruise != nil {
+            // Anywhere in the plot works, not only on the line: a click moves the target there and a drag follows.
+            let location = convert(event.locationInWindow, from: nil)
+            guard plot.rect.insetBy(dx: -CurveStyle.hitRadius, dy: 0).contains(location) else { return }
+            cruiseDragging = true
+            moveCruise(to: location)
+            return
+        }
         guard isEditable else { return }
         let location = convert(event.locationInWindow, from: nil)
         let hit = hitIndex(at: location)
@@ -178,7 +245,26 @@ final class CurveEditorView: NSView {
         }
     }
 
+    private func moveCruise(to location: NSPoint) {
+        guard var current = cruise else { return }
+        let t = (plot.data(at: location).t * 2).rounded() / 2
+        let target = min(max(t, current.range.lowerBound), current.range.upperBound)
+        if target != current.target {
+            current.target = target
+            cruise = current
+        }
+        needsDisplay = true
+        renderLive()
+    }
+
+    /// The target the line shows right now, including an unfinished drag.
+    var cruiseTarget: Double? { cruise?.target }
+
     override func mouseDragged(with event: NSEvent) {
+        if cruiseDragging {
+            moveCruise(to: convert(event.locationInWindow, from: nil))
+            return
+        }
         guard let index = dragIndex, points.indices.contains(index) else { return }
         let location = convert(event.locationInWindow, from: nil)
         let target = plot.data(at: NSPoint(x: location.x + dragOffset.width, y: location.y + dragOffset.height))
@@ -192,6 +278,14 @@ final class CurveEditorView: NSView {
     }
 
     override func mouseUp(with event: NSEvent) {
+        if cruiseDragging {
+            cruiseDragging = false
+            cruiseHover = hitsCruise(convert(event.locationInWindow, from: nil))
+            needsDisplay = true
+            renderLive()
+            if let target = cruise?.target { onCruiseCommit?(target) }
+            return
+        }
         guard dragIndex != nil else { return }
         dragIndex = nil
         if dragMoved {
@@ -205,7 +299,7 @@ final class CurveEditorView: NSView {
 
     override func rightMouseDown(with event: NSEvent) {
         // No super call: the default implementation would look for a context menu.
-        guard isEditable else { return }
+        guard isEditable, cruise == nil else { return }
         if let hit = hitIndex(at: convert(event.locationInWindow, from: nil)) {
             removePoint(at: hit)
         }

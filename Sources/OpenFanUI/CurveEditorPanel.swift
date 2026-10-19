@@ -30,7 +30,6 @@ final class CurveEditorPanel: NSView {
 
     private let store: PresetStore
     private let graph = CurveEditorView(frame: .zero)
-    private let holdView: HoldTargetView
     private let picker: NSView
     private let nameEditor = PresetNameEditor()
     private let inputPopup = NSPopUpButton(frame: .zero, pullsDown: false)
@@ -52,7 +51,6 @@ final class CurveEditorPanel: NSView {
     init(store: PresetStore, picker: NSView, width: CGFloat) {
         self.store = store
         self.picker = picker
-        self.holdView = HoldTargetView(width: width)
         super.init(frame: .zero)
         configure(width: width)
     }
@@ -82,9 +80,22 @@ final class CurveEditorPanel: NSView {
         refreshInputItems()
     }
 
-    func updateLive(temperature: Float?, speed: FanSpeedFormat, holding: Bool = false) {
+    /// `fanPercent` is the fans' real speed (nil while stopped); a cruise preset draws it instead of a curve value.
+    func updateLive(temperature: Float?, speed: FanSpeedFormat, fanPercent: Double? = nil) {
+        graph.setCruisePercent(fanPercent)
         graph.setLive(temperature: temperature, speed: speed)
-        holdView.updateLive(temperature: temperature, holding: holding)
+    }
+
+    /// The temperature band a cruise graph shows: wide enough to see the live reading approach the target.
+    static func cruiseAxis(for input: FanControlInput) -> ClosedRange<Double> {
+        input == .system ? 30...60 : 50...110
+    }
+
+    private static func cruiseNote(for preset: Preset) -> String {
+        guard preset.target != nil else { return preset.editorNote }
+        let note = "Cruise holds \(holdSourceName(for: preset.input)) at the target as quietly as it can and gives the fans "
+            + "back to macOS when they are not needed."
+        return (preset.isBuiltIn ? preset.editorNote : "Drag the line to change the target.") + " " + note
     }
 
     /// A hold never follows the battery (too slow to steer a loop) and needs TVS0 for the system input.
@@ -125,7 +136,7 @@ final class CurveEditorPanel: NSView {
     private func configure(width: CGFloat) {
         graph.onEdit = { [weak self] points in self?.graphEdited(points) }
         graph.onCommit = { [weak self] points in self?.graphCommitted(points) }
-        holdView.onTarget = { [weak self] target, committed in self?.targetChanged(target, committed: committed) }
+        graph.onCruiseCommit = { [weak self] target in self?.targetChanged(target) }
 
         nameEditor.onCommit = { [weak self] name in self?.commitName(name) }
         nameEditor.onError = { [weak self] message in self?.fail(message) }
@@ -172,7 +183,7 @@ final class CurveEditorPanel: NSView {
 
         // The graph and the text that replaces it share one slot, so the picker below never moves when the preset changes.
         let graphSlot = NSView()
-        for view in [graph, holdView, placeholder] {
+        for view in [graph, placeholder] {
             view.translatesAutoresizingMaskIntoConstraints = false
             graphSlot.addSubview(view)
         }
@@ -182,10 +193,6 @@ final class CurveEditorPanel: NSView {
             graph.bottomAnchor.constraint(equalTo: graphSlot.bottomAnchor),
             graph.leadingAnchor.constraint(equalTo: graphSlot.leadingAnchor),
             graph.trailingAnchor.constraint(equalTo: graphSlot.trailingAnchor),
-            holdView.topAnchor.constraint(equalTo: graphSlot.topAnchor),
-            holdView.bottomAnchor.constraint(equalTo: graphSlot.bottomAnchor),
-            holdView.leadingAnchor.constraint(equalTo: graphSlot.leadingAnchor),
-            holdView.trailingAnchor.constraint(equalTo: graphSlot.trailingAnchor),
             placeholder.centerYAnchor.constraint(equalTo: graphSlot.centerYAnchor),
             placeholder.leadingAnchor.constraint(equalTo: graphSlot.leadingAnchor),
             placeholder.trailingAnchor.constraint(equalTo: graphSlot.trailingAnchor),
@@ -216,21 +223,20 @@ final class CurveEditorPanel: NSView {
             return
         }
         setTextOnly(false)
-        graph.isHidden = draft.isHold
-        holdView.isHidden = !draft.isHold
         refreshInputItems()
 
         let builtIn = draft.isBuiltIn
-        if draft.isHold {
-            holdView.show(draft)
+        if let target = draft.target {
+            graph.setCruise(target: target, axis: Self.cruiseAxis(for: draft.input), range: Preset.holdRange(for: draft.input))
         } else {
+            graph.clearCruise()
             graph.isEditable = !builtIn
             graph.setPoints(draft.points)
         }
         nameEditor.set(name: draft.name, isBuiltIn: builtIn)
         inputPopup.isEnabled = !builtIn
         inputPopup.toolTip = builtIn ? "Built-in presets keep this setting"
-            : (draft.isHold ? "Temperature the hold keeps" : "Temperature the curve follows")
+            : (draft.isHold ? "Temperature cruise keeps" : "Temperature the curve follows")
         if let index = FanControlInput.allCases.firstIndex(of: draft.input), inputPopup.indexOfSelectedItem != index {
             inputPopup.selectItem(at: index)
         }
@@ -238,7 +244,7 @@ final class CurveEditorPanel: NSView {
         deleteButton.isHidden = builtIn
         updateDeleteTitle()
 
-        let note = draft.editorNote
+        let note = draft.isHold ? Self.cruiseNote(for: draft) : draft.editorNote
         if noteLabel.stringValue != note { noteLabel.stringValue = note }
         noteLabel.isHidden = note.isEmpty
         refreshError()
@@ -252,7 +258,6 @@ final class CurveEditorPanel: NSView {
 
     private func setTextOnly(_ textOnly: Bool) {
         graph.isHidden = textOnly
-        holdView.isHidden = true
         placeholder.isHidden = !textOnly
         nameRow.isHidden = textOnly
         buttonRow.isHidden = textOnly
@@ -330,18 +335,20 @@ final class CurveEditorPanel: NSView {
 
     /// The slider saves (and so re-sends HOLD) only on release, not on every step of a drag. Built-ins stay read-only:
     /// releasing the slider on one saves and activates the user's own copy at the new target.
-    private func targetChanged(_ target: Double, committed: Bool) {
-        guard var draft, draft.isHold else { return }
+    private func targetChanged(_ target: Double) {
+        guard var draft, draft.isHold, target != draft.target else { return }
         disarmDelete()
-        guard committed else { return }
         guard draft.isBuiltIn else {
+            // A name that only spelled out the old target follows the new one.
+            if let old = draft.target, draft.name == PresetLibrary.cruiseName(old) {
+                draft.name = store.library.freeName(based: PresetLibrary.cruiseName(target))
+            }
             draft.target = target
             apply(draft)
             return
         }
-        guard target != draft.target else { return }
         var copy = store.library.newCustomPreset(copying: draft)
-        copy.name = store.library.freeName(based: "Hold \(HoldTargetView.degrees(target))")
+        copy.name = store.library.freeName(based: PresetLibrary.cruiseName(target))
         copy.target = target
         do {
             try store.upsert(copy)

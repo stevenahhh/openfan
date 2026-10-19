@@ -74,9 +74,11 @@ final class CurveLiveMarker {
         text.foregroundColor = NSColor.labelColor.cgColor
     }
 
-    func render(points: [CurvePoint], plot: CurvePlot, suppressed: Bool = false) {
+    /// On a cruise preset there is no curve to sit on: `cruisePercent` is the fans' real speed (nil while they are
+    /// stopped), and the dot shows where the fans are rather than where a curve would put them.
+    func render(points: [CurvePoint], plot: CurvePlot, suppressed: Bool = false, cruise: Bool = false, cruisePercent: Double? = nil) {
         let bounds = plot.rect
-        let visible = !suppressed && temperature != nil && !points.isEmpty && bounds.width > 8 && bounds.height > 8
+        let visible = !suppressed && temperature != nil && (cruise || !points.isEmpty) && bounds.width > 8 && bounds.height > 8
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         defer { CATransaction.commit() }
@@ -85,8 +87,8 @@ final class CurveLiveMarker {
         }
         guard visible, let temperature else { return }
 
-        let clamped = min(max(Double(temperature), 0), CurveGeometry.maxTemperature)
-        let percent = FanCurve(points: points).percent(at: Double(temperature))
+        let clamped = min(max(Double(temperature), plot.tMin), plot.tMax)
+        let percent = cruise ? (cruisePercent ?? 0) : FanCurve(points: points).percent(at: Double(temperature))
         let center = plot.point(t: clamped, p: percent)
 
         let path = CGMutablePath()
@@ -103,7 +105,8 @@ final class CurveLiveMarker {
             transform: nil
         )
 
-        let lines = [String(format: "%.1f\u{00B0}C", temperature), speed.text(forCurvePercent: percent)]
+        let speedLine = cruise && cruisePercent == nil ? "fans off" : speed.text(forCurvePercent: percent)
+        let lines = [String(format: "%.1f\u{00B0}C", temperature), speedLine]
         let label = lines.joined(separator: "\n")
         let size = CurvePill.size(for: lines)
         var x = center.x + CurveStyle.pillOffset
