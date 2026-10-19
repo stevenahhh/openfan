@@ -1,6 +1,12 @@
 import AppKit
 import OpenFanCore
 
+/// A cruise target on the graph; `active` while it is hovered or dragged.
+struct CruiseMark: Equatable {
+    var target: Double
+    var active: Bool
+}
+
 struct CurveDrawing {
     var points: [CurvePoint]
     var mapping: CurvePlot
@@ -11,6 +17,8 @@ struct CurveDrawing {
     var speed: FanSpeedFormat
     /// Backing pixels per point: a layer-backed view draws in points, so the context cannot tell.
     var scale: CGFloat
+    /// A cruise preset's target, drawn as a line the user drags instead of a curve.
+    var cruise: CruiseMark?
 
     func draw() {
         let plot = mapping.rect
@@ -24,6 +32,7 @@ struct CurveDrawing {
         frame.addClip()
         drawGrid(in: plot)
         drawCurve(in: plot)
+        drawCruiseArea(in: plot)
         NSGraphicsContext.restoreGraphicsState()
 
         NSColor.separatorColor.setStroke()
@@ -31,17 +40,61 @@ struct CurveDrawing {
         frame.stroke()
 
         drawDots(in: plot)
+        drawCruiseLine(in: plot)
         drawAxes(in: plot)
         drawDragReadout(in: plot)
+    }
+
+    /// Above the target the fans work, so that side carries the same tint as the area under a curve.
+    private func drawCruiseArea(in plot: NSRect) {
+        guard let cruise else { return }
+        let x = mapping.point(t: cruise.target, p: 0).x
+        NSColor.controlAccentColor.withAlphaComponent(CurveStyle.fillAlpha).setFill()
+        NSRect(x: x, y: plot.minY, width: plot.maxX - x, height: plot.height).fill()
+    }
+
+    private func drawCruiseLine(in plot: NSRect) {
+        guard let cruise else { return }
+        let x = mapping.point(t: cruise.target, p: 0).x
+        let line = NSBezierPath()
+        line.lineWidth = CurveStyle.curveWidth
+        line.lineCapStyle = .round
+        line.move(to: NSPoint(x: x, y: plot.minY))
+        line.line(to: NSPoint(x: x, y: plot.maxY))
+        NSColor.controlAccentColor.setStroke()
+        line.stroke()
+
+        let radius = cruise.active ? CurveStyle.dotRadiusActive : CurveStyle.dotRadius
+        let handle = NSBezierPath(ovalIn: NSRect(x: x - radius, y: plot.midY - radius, width: radius * 2, height: radius * 2))
+        NSColor.controlAccentColor.setFill()
+        handle.fill()
+        NSColor.textBackgroundColor.setStroke()
+        handle.lineWidth = CurveStyle.dotRingWidth
+        handle.stroke()
+
+        let lines = ["Target \(Self.degrees(cruise.target))"]
+        let size = CurvePill.size(for: lines)
+        var pillX = x + CurveStyle.pillOffset
+        if pillX + size.width > plot.maxX { pillX = x - CurveStyle.pillOffset - size.width }
+        let origin = NSPoint(x: min(max(pillX, plot.minX), plot.maxX - size.width), y: plot.maxY - size.height - 6)
+        CurvePill.draw(lines, at: origin, size: size, tint: .controlAccentColor)
+    }
+
+    static func degrees(_ value: Double) -> String {
+        value == value.rounded() ? String(format: "%.0f\u{00B0}C", value) : String(format: "%.1f\u{00B0}C", value)
     }
 
     private func drawGrid(in plot: NSRect) {
         func crisp(_ value: CGFloat) -> CGFloat { (floor(value * scale) + 0.5) / scale }
         let minor = NSBezierPath()
         let major = NSBezierPath()
-        for temperature in stride(from: 0.0, through: CurveGeometry.maxTemperature, by: 10) {
+        // A zoomed cruise axis gets a line every 5 degrees, stronger every 10; the full curve axis every 10 and 50.
+        let zoomed = mapping.tMax - mapping.tMin <= 60
+        let step: Double = zoomed ? 5 : 10
+        let majorEvery: Double = zoomed ? 10 : 50
+        for temperature in stride(from: (mapping.tMin / step).rounded(.up) * step, through: mapping.tMax, by: step) {
             let x = crisp(mapping.point(t: temperature, p: 0).x)
-            let path = temperature.truncatingRemainder(dividingBy: 50) == 0 ? major : minor
+            let path = temperature.truncatingRemainder(dividingBy: majorEvery) == 0 ? major : minor
             path.move(to: NSPoint(x: x, y: plot.minY))
             path.line(to: NSPoint(x: x, y: plot.maxY))
         }
@@ -59,7 +112,7 @@ struct CurveDrawing {
     }
 
     private func drawCurve(in plot: NSRect) {
-        guard let first = points.first, let last = points.last else { return }
+        guard cruise == nil, let first = points.first, let last = points.last else { return }
         let start = mapping.point(t: 0, p: first.p)
         let end = mapping.point(t: CurveGeometry.maxTemperature, p: last.p)
         let firstPoint = mapping.point(t: first.t, p: first.p)
@@ -102,7 +155,7 @@ struct CurveDrawing {
     }
 
     private func drawDots(in plot: NSRect) {
-        guard isEditable else { return }
+        guard isEditable, cruise == nil else { return }
         for (index, point) in points.enumerated() where point.t >= 0 && point.t <= CurveGeometry.maxTemperature {
             let center = mapping.point(t: point.t, p: point.p)
             let active = index == dragIndex || (dragIndex == nil && index == hoverIndex)
@@ -165,7 +218,7 @@ struct CurveDrawing {
     }
 
     private func drawDragReadout(in plot: NSRect) {
-        guard let index = dragIndex, points.indices.contains(index) else { return }
+        guard cruise == nil, let index = dragIndex, points.indices.contains(index) else { return }
         let point = points[index]
         let lines = [String(format: "%.0f\u{00B0}C", point.t), speed.text(forCurvePercent: point.p)]
         let size = CurvePill.size(for: lines)

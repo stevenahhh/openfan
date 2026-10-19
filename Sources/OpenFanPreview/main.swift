@@ -33,9 +33,16 @@ func snapshot(arguments: [String]) -> Int32 {
     let url = URL(fileURLWithPath: arguments[index + 1])
     var preset = "balanced"
     if let p = arguments.firstIndex(of: "--preset"), p + 1 < arguments.count { preset = arguments[p + 1] }
-    NSApp.appearance = NSAppearance(named: arguments.contains("--dark") ? .darkAqua : .aqua)
+    let appearance = NSAppearance(named: arguments.contains("--dark") ? .darkAqua : .aqua)
+    NSApp.appearance = appearance
 
     let controller = previewPopover(active: preset)
+    // Offscreen there is no popover material behind the view, so it gets the window background of its appearance.
+    controller.view.appearance = appearance
+    controller.view.wantsLayer = true
+    appearance?.performAsCurrentDrawingAppearance {
+        controller.view.layer?.backgroundColor = NSColor.windowBackgroundColor.cgColor
+    }
     let size = NSSize(width: 380, height: controller.preferredContentSize.height)
     let window = NSWindow(contentRect: NSRect(origin: .zero, size: size), styleMask: [.borderless], backing: .buffered, defer: false)
     window.contentViewController = controller

@@ -43,7 +43,7 @@ public func previewPopover(active: String = "balanced") -> PopoverViewController
     let store = PresetStore(url: directory.appendingPathComponent("presets.json"))
     try? store.load()
     if store.library.preset(id: previewHoldID) == nil {
-        try? store.upsert(Preset(id: previewHoldID, name: "Hold 47 \u{00B0}C", input: .system, points: [], target: 47))
+        try? store.upsert(Preset(id: previewHoldID, name: PresetLibrary.cruiseName(47), input: .system, points: [], target: 47))
     }
     try? store.setActive(active)
 
