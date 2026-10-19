@@ -3,7 +3,7 @@ import OpenFanCore
 import OpenFanSMC
 
 /// A reading that makes every part of the popover show something: two fans at the given rpm, three temperatures.
-public func previewSnapshot(temperature: Float = 46.5, rpm: Float = 2900) -> LiveSnapshot {
+public func previewSnapshot(temperature: Float = 46.5, rpm: Float = 2900, mode: HelperMode = .curve) -> LiveSnapshot {
     let fans = [
         FanInfo(index: 0, minRPM: 2317, maxRPM: 7826),
         FanInfo(index: 1, minRPM: 2317, maxRPM: 7826),
@@ -15,7 +15,8 @@ public func previewSnapshot(temperature: Float = 46.5, rpm: Float = 2900) -> Liv
         fans: [
             FanReading(index: 0, rpm: rpm, targetRPM: rpm, manual: true),
             FanReading(index: 1, rpm: rpm - 12, targetRPM: rpm, manual: true),
-        ]
+        ],
+        system: 44.6
     )
     return LiveSnapshot(
         reading: reading,
@@ -23,22 +24,28 @@ public func previewSnapshot(temperature: Float = 46.5, rpm: Float = 2900) -> Liv
         pressure: .normal,
         helperInstalled: true,
         helperConnected: true,
-        helperStatus: HelperStatus(mode: .curve, inputTemperature: Double(temperature), targetRPM: [rpm, rpm]),
-        helperError: nil
+        helperStatus: HelperStatus(mode: mode, inputTemperature: Double(temperature), targetRPM: [rpm, rpm]),
+        helperError: nil,
+        hasSystem: true
     )
 }
 
 /// A popover wired to a throwaway store, for the canvas and the preview host. Nothing it does can reach the real
-/// settings or presets, and the helper is not involved. A built-in preset is active so the graph, the live readout
-/// and the editor buttons are all on screen.
-public func previewPopover() -> PopoverViewController {
+/// settings or presets, and the helper is not involved. A built-in preset is active by default so the graph, the live
+/// readout and the editor buttons are all on screen; `previewHoldID` selects a user's own hold preset.
+public let previewHoldID = "custom-hold"
+
+public func previewPopover(active: String = "balanced") -> PopoverViewController {
     let directory = URL(fileURLWithPath: NSTemporaryDirectory())
         .appendingPathComponent("openfan-previews", isDirectory: true)
     try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
 
     let store = PresetStore(url: directory.appendingPathComponent("presets.json"))
     try? store.load()
-    try? store.setActive("balanced")
+    if store.library.preset(id: previewHoldID) == nil {
+        try? store.upsert(Preset(id: previewHoldID, name: "Hold 47 \u{00B0}C", input: .system, points: [], target: 47))
+    }
+    try? store.setActive(active)
 
     let controller = PopoverViewController(
         store: store,
@@ -52,7 +59,8 @@ public func previewPopover() -> PopoverViewController {
         )
     )
     controller.loadView()
-    controller.update(previewSnapshot())
+    let hold = store.library.activePreset?.isHold ?? false
+    controller.update(previewSnapshot(mode: hold ? .hold : .curve))
     return controller
 }
 
