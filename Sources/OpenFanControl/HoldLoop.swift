@@ -11,8 +11,13 @@ public struct HoldConfig: Equatable, Sendable {
     public var band: Double = 15
     /// Maximum upward slew, percent per second.
     public var rateUp: Double = 0.2
-    /// Maximum downward slew, percent per second.
+    /// Maximum downward slew near the target, percent per second.
     public var rateDown: Double = 0.1
+    /// Maximum downward slew once the temperature is more than `fastDownBelow` under the target: the Mac is clearly
+    /// cool, and a falling fan is never the annoying direction.
+    public var rateDownFast: Double = 0.5
+    /// How far under the target, in Celsius, the faster downward slew starts.
+    public var fastDownBelow: Double = 1
     /// Absolute cap on any upward die-guard move, percent per second.
     public var rateUrgent: Double = 0.9
     /// A write is skipped while the output moved less than this since the last write, in percent.
@@ -83,7 +88,7 @@ public enum HoldDecision: Equatable, Sendable {
 /// The engine does not know which fans exist, and it never writes below `Mn` itself (percent 0 maps to
 /// `Mn`); only a release returns the fans to macOS. Temperature validity is the caller's concern.
 public struct HoldLoop: Sendable {
-    public let target: Double
+    public private(set) var target: Double
     public let config: HoldConfig
 
     /// Whether the loop is currently handing the fans back to macOS.
@@ -108,6 +113,23 @@ public struct HoldLoop: Sendable {
         self.config = config
         // A freshly set hold must not wait out the release dwell: a hot Mac engages on the first tick.
         self.timeInState = config.minReleased
+    }
+
+    /// Moves the target and keeps everything else (integrator, commanded speed, released or holding), so dragging the
+    /// target never hands the fans back or throws away what the loop has learned. The rate limiter smooths the step.
+    public mutating func retarget(_ newTarget: Double) {
+        target = newTarget
+    }
+
+    /// Hands the fans back now, whatever the loop wants: used while the input cannot be trusted. The integrator is
+    /// kept, so the loop resumes from what it knew once the input moves again.
+    public mutating func forceRelease() {
+        isReleased = true
+        timeInState = 0
+        belowLine = 0
+        writtenPercent = nil
+        commandedPercent = 0
+        slewDirection = 0
     }
 
     private var integralMin: Double { -config.band }
@@ -141,18 +163,19 @@ public struct HoldLoop: Sendable {
                 decision = .none
             }
         } else {
-            // Freeze the integrator while the output is pinned or still slewing in the direction of the error;
-            // otherwise the integral would wind up during a rate-limited ramp.
+            // Freeze the integrator only while the output is pinned at the top or still ramping up into a rising
+            // error, so it cannot wind up during a rate-limited climb. Downward it keeps integrating: a Mac that has
+            // cooled below the target should let the fans go, not hold them while a frozen integral waits out the ramp.
             let frozen = (commandedPercent >= 100 && error > 0)
                 || (slewDirection > 0 && error > 0)
-                || (slewDirection < 0 && error < 0)
             if !frozen {
                 integrator = clamp(integrator + config.ki * dt * error, integralMin, integralMax)
             }
 
             let demand = integrator + config.kp * (error + engageOffset)
             let desired = clamp(demand, 0, 100)
-            let step = clamp(desired - commandedPercent, -config.rateDown * dt, config.rateUp * dt)
+            let downRate = error < -config.fastDownBelow ? config.rateDownFast : config.rateDown
+            let step = clamp(desired - commandedPercent, -downRate * dt, config.rateUp * dt)
             slewDirection = abs(desired - commandedPercent) <= abs(step) + 1e-9
                 ? 0
                 : (step > 0 ? 1 : (step < 0 ? -1 : 0))
