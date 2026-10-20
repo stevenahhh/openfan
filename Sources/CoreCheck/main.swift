@@ -717,4 +717,31 @@ do {
     }
 }
 
+// The app's watchdog: a preset is selected but the helper keeps answering Auto (1.10 left Cruise off for 12 hours).
+do {
+    var dog = ControlWatchdog(retryInterval: 30)
+    check.expectEqual(dog.observe(mode: .auto, presetSelected: true, now: 0), false, "watchdog: one Auto reply is not enough")
+    check.expectEqual(dog.observe(mode: .auto, presetSelected: true, now: 5), true, "watchdog: the second Auto in a row resends")
+    check.expectEqual(dog.isLost, false, "watchdog: not reported lost before the resend had a chance")
+    check.expectEqual(dog.observe(mode: .auto, presetSelected: true, now: 10), false, "watchdog: no second resend within 30 s")
+    check.expectEqual(dog.isLost, true, "watchdog: Auto after a resend is reported")
+    check.expectEqual(dog.observe(mode: .auto, presetSelected: true, now: 36), true, "watchdog: resends again after 30 s")
+    check.expectEqual(dog.observe(mode: .hold, presetSelected: true, now: 41), false, "watchdog: a running preset needs nothing")
+    check.expectEqual(dog.isLost, false, "watchdog: the warning clears once the preset runs")
+
+    var idle = ControlWatchdog()
+    _ = idle.observe(mode: .auto, presetSelected: false, now: 0)
+    check.expectEqual(idle.observe(mode: .auto, presetSelected: false, now: 5), false, "watchdog: Auto is right when no preset is selected")
+
+    var monitor = ControlWatchdog()
+    _ = monitor.observe(mode: .monitor, presetSelected: true, now: 0)
+    check.expectEqual(monitor.observe(mode: .monitor, presetSelected: true, now: 5), false,
+                      "watchdog: a helper in monitor mode is not resent to (it refuses control)")
+
+    var chosen = ControlWatchdog()
+    _ = chosen.observe(mode: .auto, presetSelected: true, now: 0)
+    chosen.reset()
+    check.expectEqual(chosen.observe(mode: .auto, presetSelected: true, now: 1), false, "watchdog: choosing a preset restarts the count")
+}
+
 exit(check.summary())
