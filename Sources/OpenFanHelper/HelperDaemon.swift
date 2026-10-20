@@ -76,7 +76,8 @@ final class HelperDaemon {
     private var lastTargets: [Int: Float] = [:]
     private var loggedMode: HelperMode = .auto
     private var systemInputWatch = SystemInputWatch()
-    private var systemInputStuck = false
+    /// True while a hold is paused because TVS0 stopped moving; STATUS reports it so the app can say why.
+    private var holdPaused = false
     /// Monotonic timestamp of the previous hold tick; nil starts a new hold session at dt 1.0.
     private var lastControlTick: UInt64?
     /// Last hold state written to the log, and when; a hold logs its transitions and one summary a minute.
@@ -205,18 +206,22 @@ final class HelperDaemon {
                 connection.send("ERR no system sensor")
                 return
             }
+            let retargeted: Bool
             do {
-                try controller.setHold(target: target, input: input,
-                                       config: telemetry.hasForceTest ? .forFtstMachines() : HoldConfig())
+                retargeted = try controller.setHold(target: target, input: input,
+                                                    config: telemetry.hasForceTest ? .forFtstMachines() : HoldConfig())
             } catch {
                 connection.send("ERR \(error)")
                 return
             }
-            logLine("command HOLD \(input.rawValue) \(HelperCommand.number(target)) from connection \(connection.id)")
-            systemInputWatch = SystemInputWatch()
-            systemInputStuck = false
-            lastControlTick = nil
-            loggedHold = nil
+            logLine("command HOLD \(input.rawValue) \(HelperCommand.number(target)) from connection \(connection.id)"
+                    + (retargeted ? " (new target, loop kept)" : ""))
+            if !retargeted {
+                systemInputWatch = SystemInputWatch()
+                holdPaused = false
+                lastControlTick = nil
+                loggedHold = nil
+            }
             beginControl(connection, input: input)
             connection.send("OK")
         }
@@ -285,24 +290,27 @@ final class HelperDaemon {
             lastControlTick = nil
         }
 
-        var temperature = inputs.temperature
-        if controller.mode == .hold, activeInput == .system {
-            let watched = systemInputWatch.check(system: temperature.map { Double($0) },
-                                                 die: inputs.safety.map { Double($0) },
-                                                 now: Double(now) / 1_000_000_000)
-            if watched == nil {
-                if !systemInputStuck {
-                    logLine("system temperature stuck or missing")
-                    systemInputStuck = true
-                }
-                temperature = nil
-            } else {
-                systemInputStuck = false
+        let temperature = inputs.temperature
+        let observations = reading.fans.map { FanObservation(rpm: $0.rpm, manual: $0.manual) }
+
+        // A stuck TVS0 pauses the hold: the fans go back to macOS and hold mode stays set, so the loop resumes on its
+        // own once the value moves. A missing reading still drops control below, as for every other input.
+        var paused = false
+        if controller.mode == .hold, activeInput == .system, let system = temperature {
+            let engaged = controller.holdState.map { !$0.released } ?? false
+            paused = systemInputWatch.check(system: Double(system), die: inputs.safety.map { Double($0) },
+                                            now: Double(now) / 1_000_000_000, engaged: engaged) == nil
+            if paused != holdPaused {
+                holdPaused = paused
+                logLine(paused
+                        ? "hold: paused, the system temperature stopped moving while the die worked; fans with macOS"
+                        : "hold: resumed, the system temperature moves again")
             }
         }
 
-        let observations = reading.fans.map { FanObservation(rpm: $0.rpm, manual: $0.manual) }
-        let actions = controller.tick(temperature: temperature, safetyTemperature: inputs.safety, fans: observations, dt: dt)
+        let actions = paused
+            ? controller.pauseHold(fans: observations)
+            : controller.tick(temperature: temperature, safetyTemperature: inputs.safety, fans: observations, dt: dt)
 
         // Strictly in the order returned: a fan's setTarget always precedes its setManual.
         for action in actions {
@@ -525,7 +533,7 @@ final class HelperDaemon {
             inputTemperature: active ? lastTemperature : nil,
             targetRPM: active && targets.count == fans.count ? targets : [],
             writes: controller.writes,
-            error: controller.lastError
+            error: mode == .hold && holdPaused ? HelperStatus.holdPausedReason : controller.lastError
         )
     }
 
