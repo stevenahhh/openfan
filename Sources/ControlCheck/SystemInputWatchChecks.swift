@@ -4,33 +4,49 @@ import OpenFanCore
 import OpenFanSMC
 
 func runSystemInputWatchChecks(_ check: Checker) {
+    /// Feeds one sample a second from `from` up to (not including) `to`; returns how many came back nil.
+    func feed(_ watch: inout SystemInputWatch, system: Double, from: Int, to: Int, engaged: Bool,
+              die: (Int) -> Double) -> Int {
+        var nils = 0
+        for t in from..<to where watch.check(system: system, die: die(t), now: Double(t), engaged: engaged) == nil {
+            nils += 1
+        }
+        return nils
+    }
+
     var watch = SystemInputWatch()
-    check.expectEqual(watch.check(system: 45, die: 60, now: 0), Double?.some(45), "a moving system value passes through")
-    check.expectEqual(watch.check(system: 45.06, die: 75, now: 100), Double?.some(45.06), "a >= 0.05 C change restarts the window")
+    check.expectEqual(watch.check(system: 45, die: 60, now: 0, engaged: true), Double?.some(45), "a moving system value passes through")
+    check.expectEqual(watch.check(system: 45.06, die: 75, now: 1, engaged: true), Double?.some(45.06), "a >= 0.05 C change passes through")
+
+    // The 2026-10-20 night: TVS0 flat at 32.05 C for two hours while background bursts spiked the die 35 -> 47 C for
+    // ten seconds every five minutes. 1.10 called that stuck and dropped the cruise.
+    let bursts: (Int) -> Double = { t in t % 300 < 10 ? 47 : 35 }
+    watch = SystemInputWatch()
+    check.expectEqual(feed(&watch, system: 32.05, from: 0, to: 7200, engaged: false, die: bursts), 0,
+                      "an idle night with die bursts is never stuck while the fans are with macOS")
+    watch = SystemInputWatch()
+    check.expectEqual(feed(&watch, system: 32.05, from: 0, to: 7200, engaged: true, die: bursts), 0,
+                      "short die bursts move the 20 s die average too little to call TVS0 stuck, even while holding")
+
+    // A genuinely frozen TVS0 while the die works hard for minutes, with the fans held.
+    let sustained: (Int) -> Double = { t in t < 100 ? 60 : 80 }
+    watch = SystemInputWatch()
+    check.expectEqual(feed(&watch, system: 45, from: 0, to: 600, engaged: true, die: sustained), 0,
+                      "flat for less than 10 min is not stuck")
+    check.expect(feed(&watch, system: 45, from: 600, to: 610, engaged: true, die: sustained) > 0,
+                 "flat for 10 min while the die average swung 20 C is stuck")
+    check.expect(watch.isStuck, "the verdict is exposed")
+    check.expectEqual(watch.check(system: 45.03, die: 80, now: 611, engaged: false), Double?.none,
+                      "a stuck verdict holds, released or not, until the value moves by 0.05 C")
+    check.expectEqual(watch.check(system: 45.2, die: 80, now: 612, engaged: false), Double?.some(45.2),
+                      "a moved value clears the verdict")
+    check.expect(!watch.isStuck, "and the flag")
 
     watch = SystemInputWatch()
-    _ = watch.check(system: 45, die: 60, now: 0)
-    check.expectEqual(watch.check(system: 45, die: 75, now: 301), Double?.none,
-                      "frozen 301 s while the die swings 60->75 is stuck")
-    check.expectEqual(watch.check(system: 45, die: 61, now: 310), Double?.none,
-                      "a stuck sensor keeps returning nil")
-
-    watch = SystemInputWatch()
-    _ = watch.check(system: 45, die: 60, now: 0)
-    check.expectEqual(watch.check(system: 45, die: 60, now: 301), Double?.some(45),
-                      "frozen 301 s with a steady die is not stuck")
-
-    watch = SystemInputWatch()
-    _ = watch.check(system: 45, die: 60, now: 0)
-    _ = watch.check(system: 45, die: 75, now: 301)
-    check.expectEqual(watch.check(system: 45.03, die: 75, now: 305), Double?.none,
-                      "a move below 0.05 C does not clear the stuck verdict")
-    check.expectEqual(watch.check(system: 46, die: 75, now: 310), Double?.some(46),
-                      "a changed value is accepted after a stuck verdict")
-
-    watch = SystemInputWatch()
-    check.expectEqual(watch.check(system: nil, die: 60, now: 0), Double?.none, "nil system yields nil")
-    check.expectEqual(watch.check(system: .nan, die: 60, now: 1), Double?.none, "a non-finite system yields nil")
+    check.expectEqual(feed(&watch, system: 45, from: 0, to: 600, engaged: false, die: sustained), 0,
+                      "released, a flat value with a working die is not judged")
+    check.expectEqual(feed(&watch, system: 45, from: 600, to: 700, engaged: true, die: sustained), 0,
+                      "the window starts when the loop takes the fans, not before")
 
     let fanList = [
         FanInfo(index: 0, minRPM: 2317, maxRPM: 7826),
@@ -62,6 +78,41 @@ func runSystemInputWatchChecks(_ check: Checker) {
             check.expect(rpm < fanList[0].maxRPM, "fan \(fan) does not jump to Mx after restart")
         }
         check.expect(wroteTarget, "restart emits a target instead of applying the old integrator")
+    }
+
+    do {
+        let controller = FanController(fans: fanList)
+        _ = check.expectNoThrow("hold accepted for pause") { try controller.setHold(target: 45, input: .system) }
+        controller.noteApplied(controller.tick(temperature: 48, fans: fanList.map { _ in FanObservation(rpm: 3000, manual: false) }))
+        check.expectEqual(controller.holdState?.released, Bool?.some(false), "the hold engaged before the pause")
+        let paused = controller.pauseHold(fans: fanList.map { _ in FanObservation(rpm: 3000, manual: true) })
+        check.expectEqual(paused, fanList.map { FanAction.setManual(fan: $0.index, on: false) }, "a pause hands every manual fan back")
+        check.expectEqual(controller.mode, .hold, "a pause keeps hold mode, so the cruise resumes by itself")
+        check.expectEqual(controller.holdState?.released, Bool?.some(true), "the loop is released while paused")
+        check.expectEqual(controller.pauseHold(fans: fanList.map { _ in FanObservation(rpm: 0, manual: false) }), [],
+                          "a pause with the fans already with macOS writes nothing")
+    }
+
+    do {
+        let controller = FanController(fans: fanList)
+        let first = check.expectNoThrow("hold accepted for retarget") { try controller.setHold(target: 45, input: .system) }
+        check.expectEqual(first, Bool?.some(false), "a first HOLD starts a loop")
+        var observations = fanList.map { _ in FanObservation(rpm: 3000, manual: false) }
+        for _ in 0..<60 {
+            let actions = controller.tick(temperature: 48, fans: observations, dt: 1)
+            controller.noteApplied(actions)
+            observations = fanList.map { _ in FanObservation(rpm: 3000, manual: true) }
+        }
+        let before = controller.holdState
+        let again = check.expectNoThrow("same input retargets") { try controller.setHold(target: 46, input: .system) }
+        check.expectEqual(again, Bool?.some(true), "a new target on the same input keeps the loop")
+        check.expectEqual(controller.holdTarget, Double?.some(46), "the target moved")
+        check.expectEqual(controller.holdState?.integrator, before?.integrator, "the integrator is kept")
+        check.expectEqual(controller.holdState?.released, Bool?.some(false), "the fans stay held")
+        let next = controller.tick(temperature: 48, fans: observations, dt: 1)
+        check.expect(!next.contains(.setManual(fan: 0, on: false)), "a retarget never hands the fans back")
+        let other = check.expectNoThrow("another input starts over") { try controller.setHold(target: 85, input: .max) }
+        check.expectEqual(other, Bool?.some(false), "a different input starts a fresh loop")
     }
 
     do {

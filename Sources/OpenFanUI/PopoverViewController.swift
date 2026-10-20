@@ -18,6 +18,8 @@ public struct LiveSnapshot {
     public var hasSystem: Bool
     /// An M3/M4 force-test Mac: hold presets stay hidden until hold is verified there.
     public var hasForceTest: Bool
+    /// The helper keeps running Auto although a preset is selected, and sending it again has not helped yet.
+    public var controlLost: Bool
     /// What the footer offers about a newer release; nil shows nothing.
     public var update: UpdateOffer?
 
@@ -33,6 +35,7 @@ public struct LiveSnapshot {
         hasBattery: Bool = true,
         hasSystem: Bool = false,
         hasForceTest: Bool = false,
+        controlLost: Bool = false,
         update: UpdateOffer? = nil
     ) {
         self.reading = reading
@@ -46,6 +49,7 @@ public struct LiveSnapshot {
         self.hasBattery = hasBattery
         self.hasSystem = hasSystem
         self.hasForceTest = hasForceTest
+        self.controlLost = controlLost
         self.update = update
     }
 }
@@ -349,6 +353,10 @@ public final class PopoverViewController: NSViewController {
             return "Panic: a temperature reached 95 \u{00B0}C, fans at full speed."
         case .monitor?:
             return "Helper stopped controlling the fans (\(snapshot.helperStatus?.error ?? "write failed"))."
+        case .hold? where snapshot.helperStatus?.error == HelperStatus.holdPausedReason:
+            return "Cruise paused: the system temperature stopped moving. macOS runs the fans until it moves again."
+        case .auto? where snapshot.controlLost && store.library.activePreset != nil:
+            return "\(store.library.activePreset?.name ?? "The preset") is not running: macOS controls the fans. Retrying\u{2026}"
         default:
             return nil
         }

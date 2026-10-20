@@ -174,6 +174,9 @@ public struct HelperStatus: Equatable, Sendable {
     /// e.g. "smc:0x82" when the helper degraded to monitor mode.
     public var error: String?
 
+    /// `error` while a cruise is paused because the system temperature stopped moving; macOS runs the fans meanwhile.
+    public static let holdPausedReason = "paused-system-sensor-stuck"
+
     public init(mode: HelperMode, inputTemperature: Double? = nil, targetRPM: [Float] = [], writes: Int = 0, error: String? = nil) {
         self.mode = mode
         self.inputTemperature = inputTemperature

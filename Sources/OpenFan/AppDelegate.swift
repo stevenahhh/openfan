@@ -204,6 +204,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             hasBattery: telemetry?.hasBattery ?? true,
             hasSystem: telemetry?.hasSystem ?? false,
             hasForceTest: telemetry?.hasForceTest ?? false,
+            controlLost: helper.controlLost,
             update: updateOffer
         )
     }

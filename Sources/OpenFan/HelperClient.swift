@@ -17,6 +17,8 @@ final class HelperClient {
 
     private var descriptor: Int32 = -1
     private var desiredPreset: Preset?
+    private var watchdog = ControlWatchdog()
+    private var controlLostFlag = false
     private var backoffSeconds: UInt = 1
     private var nextAttempt = Date.distantPast
 
@@ -46,6 +48,12 @@ final class HelperClient {
         return lastErrorValue
     }
 
+    /// True while the helper keeps reporting Auto although a preset is selected and resending has not helped yet.
+    var controlLost: Bool {
+        lock.lock(); defer { lock.unlock() }
+        return controlLostFlag
+    }
+
     func connect() {
         queue.async { [self] in _ = openIfNeeded() }
     }
@@ -69,6 +77,7 @@ final class HelperClient {
     func setCurve(_ preset: Preset) {
         queue.async { [self] in
             desiredPreset = preset
+            resetWatchdog()
             guard openIfNeeded() else { return }
             recordReply(transact(Self.command(for: preset)))
         }
@@ -77,6 +86,7 @@ final class HelperClient {
     func setAuto() {
         queue.async { [self] in
             desiredPreset = nil
+            resetWatchdog()
             guard openIfNeeded() else { return }
             recordReply(transact(HelperCommand.auto.serialized))
         }
@@ -90,17 +100,38 @@ final class HelperClient {
             }
             guard let status = HelperStatus.parse(reply) else { return lastStatusValue }
             setLastStatus(status)
+            watch(status)
             return status
         }
     }
 
-    /// Sends PING to keep the helper lease fresh. Does nothing unless a curve is wanted; when the link has dropped (the
-    /// helper restarted, say) it reconnects, with backoff, and sends the curve again.
+    /// Asks for STATUS, which also keeps the helper lease fresh. Does nothing unless a preset is wanted; when the link
+    /// has dropped (the helper restarted, say) it reconnects, with backoff, and sends the preset again. When the helper
+    /// has fallen back to Auto on its own, the watchdog sends the preset again.
     func keepAlive() {
         queue.async { [self] in
-            guard desiredPreset != nil, openIfNeeded() else { return }
-            _ = transact(HelperCommand.ping.serialized)
+            guard desiredPreset != nil, openIfNeeded(),
+                  let reply = transact(HelperCommand.status.serialized),
+                  let status = HelperStatus.parse(reply) else { return }
+            setLastStatus(status)
+            watch(status)
         }
+    }
+
+    /// Runs on `queue`.
+    private func watch(_ status: HelperStatus) {
+        let resend = watchdog.observe(mode: status.mode, presetSelected: desiredPreset != nil,
+                                      now: Date().timeIntervalSinceReferenceDate)
+        lock.lock(); controlLostFlag = watchdog.isLost; lock.unlock()
+        if resend, let preset = desiredPreset {
+            recordReply(transact(Self.command(for: preset)))
+        }
+    }
+
+    /// Runs on `queue`.
+    private func resetWatchdog() {
+        watchdog.reset()
+        lock.lock(); controlLostFlag = false; lock.unlock()
     }
 
     /// Sends AUTO (when controlling) and closes the socket synchronously, for use right before quit.

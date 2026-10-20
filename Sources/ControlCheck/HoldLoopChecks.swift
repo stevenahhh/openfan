@@ -221,4 +221,70 @@ func runHoldLoopChecks(_ check: Checker) {
         check.expectEqual(config.latchOn, 95, "i: Ftst latchOn")
         check.expectEqual(config.latchOff, 88, "i: Ftst latchOff")
     }
+
+    /// A loop that has climbed to a high speed under load, as in the 2026-10-20 run (43 % at the end of the load).
+    func loaded() -> HoldLoop {
+        var loop = HoldLoop(target: n)
+        _ = loop.tick(temperature: n + 5, die: 70, actualPercent: 0, dt: 1)
+        for _ in 0..<600 { _ = loop.tick(temperature: n + 2, die: 70, actualPercent: nil, dt: 1) }
+        return loop
+    }
+
+    // j. Cooled below the target, the integrator unwinds while the fans ramp down (1.10 froze it for 7 minutes).
+    do {
+        var loop = loaded()
+        check.expect(loop.commandedPercent > 30, "j: the loaded loop runs the fans fast")
+        let start = loop.integrator
+        for _ in 0..<30 { _ = loop.tick(temperature: n - 6, die: 40, actualPercent: nil, dt: 1) }
+        check.expect(loop.integrator < start - 1, "j: the integrator falls while ramping down below the target")
+    }
+
+    // k. Well below the target the fans fall at rateDownFast; within a degree of it, at rateDown.
+    do {
+        var loop = loaded()
+        var previous = loop.commandedPercent
+        var fastest = 0.0
+        for _ in 0..<20 {
+            _ = loop.tick(temperature: n - 6, die: 40, actualPercent: nil, dt: 1)
+            fastest = max(fastest, previous - loop.commandedPercent)
+            previous = loop.commandedPercent
+        }
+        check.expect(fastest > 0.1 + 1e-9, "k: more than 0.1 %/s when the Mac is 6 C under the target")
+        check.expect(fastest <= 0.5 + 1e-9, "k: never more than rateDownFast")
+
+        var near = loaded()
+        previous = near.commandedPercent
+        var nearFastest = 0.0
+        for _ in 0..<20 {
+            _ = near.tick(temperature: n - 0.5, die: 40, actualPercent: nil, dt: 1)
+            nearFastest = max(nearFastest, previous - near.commandedPercent)
+            previous = near.commandedPercent
+        }
+        check.expect(nearFastest <= 0.1 + 1e-9, "k: within a degree of the target the fans fall no faster than rateDown")
+    }
+
+    // l. After a load ends, the fans go back to macOS within about five minutes (1.10: about ten).
+    do {
+        var loop = loaded()
+        var released: Int?
+        for second in 1...900 where released == nil {
+            if loop.tick(temperature: n - 6, die: 40, actualPercent: nil, dt: 1) == .release { released = second }
+        }
+        check.expect(released != nil, "l: the loop releases after cooling")
+        check.expect((released ?? .max) <= 330, "l: released within 330 s of cooling (got \(released ?? -1) s)")
+    }
+
+    // m. A new target keeps the loop's state.
+    do {
+        var loop = loaded()
+        let integrator = loop.integrator
+        let percent = loop.commandedPercent
+        loop.retarget(n + 1)
+        check.expectEqual(loop.target, n + 1, "m: the target moves")
+        check.expectEqual(loop.integrator, integrator, "m: the integrator is kept")
+        check.expectEqual(loop.commandedPercent, percent, "m: the commanded speed is kept")
+        check.expect(!loop.isReleased, "m: still holding")
+        let decision = loop.tick(temperature: n + 2, die: 70, actualPercent: nil, dt: 1)
+        check.expect(decision != .release, "m: the next tick does not hand the fans back")
+    }
 }

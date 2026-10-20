@@ -99,11 +99,19 @@ public final class FanController {
         self.mode = .fixed
     }
 
-    public func setHold(target: Double, input: FanControlInput, config: HoldConfig = HoldConfig()) throws {
+    /// Starts a hold, or, when one is already running on the same input and tuning, only moves its target so the fans
+    /// are not handed back and the loop keeps what it learned. Returns true for such a retarget.
+    @discardableResult
+    public func setHold(target: Double, input: FanControlInput, config: HoldConfig = HoldConfig()) throws -> Bool {
         guard target.isFinite,
               target >= Double(SensorCatalog.temperatureFloor),
               target <= Double(SensorCatalog.temperatureCeiling) else {
             throw ProtocolError.badValue("hold target must be finite and within \(SensorCatalog.temperatureFloor)...\(SensorCatalog.temperatureCeiling)")
+        }
+        if mode == .hold, self.input == input, var loop = holdLoop, loop.config == config {
+            loop.retarget(target)
+            holdLoop = loop
+            return true
         }
         self.holdLoop = HoldLoop(target: target, config: config)
         self.input = input
@@ -113,6 +121,20 @@ public final class FanController {
         self.usedTemperature = nil
         self.lastTargets = Array(repeating: nil, count: fans.count)
         self.mode = .hold
+        return false
+    }
+
+    /// Hands every manual fan back to macOS while hold mode stays set, for an input that cannot be trusted right now.
+    /// The next `tick` with a trustworthy temperature resumes from a released loop.
+    public func pauseHold(fans observations: [FanObservation]) -> [FanAction] {
+        guard mode == .hold, var loop = holdLoop else { return [] }
+        loop.forceRelease()
+        holdLoop = loop
+        var actions: [FanAction] = []
+        for (i, fan) in fans.enumerated() where observation(at: i, in: observations).manual {
+            actions.append(.setManual(fan: fan.index, on: false))
+        }
+        return actions
     }
 
     /// Starts the hold loop over as a fresh released loop. The next tick re-seeds from the fan's actual
