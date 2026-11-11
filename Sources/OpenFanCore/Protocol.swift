@@ -32,19 +32,25 @@ public enum HelperPaths {
 
 /// One line-protocol command, newline terminated over the Unix socket.
 ///
-/// PING | STATUS | AUTO | CURVE <max|cpu|gpu|battery> <t:p,t:p,...> | FIXED <percent> |
+/// PING | STATUS | AUTO | CURVE <max|cpu|gpu|battery> <t:p,t:p,...> [down=<percent per second>] | FIXED <percent> |
 /// HOLD <max|cpu|gpu|system> <targetC>
 public enum HelperCommand: Equatable, Sendable {
     case ping
     case status
     case auto
-    case curve(input: FanControlInput, points: [CurvePoint])
+    /// `rampDown` limits how fast the fans slow as the Mac cools; nil is sent as the old three-token line, so a
+    /// helper from before the option still understands it.
+    case curve(input: FanControlInput, points: [CurvePoint], rampDown: Double? = nil)
     case fixed(percent: Double)
     case hold(input: FanControlInput, target: Double)
 
     /// Temperatures a hold targets. Below 20 C the fans would be inaudible anyway; above 110 C
     /// the machine is already throttling, so such a target is far more likely a typo than intent.
     public static let holdTargetRange: ClosedRange<Double> = 20...110
+
+    /// Down rates a curve accepts, percent of the fan range per second. Slower than 0.1 keeps the fans up for a
+    /// quarter of an hour after a burst; 100 is no limit at all.
+    public static let rampDownRange: ClosedRange<Double> = 0.1...100
 
     /// Parses one wire line. Rejects empty lines, over-long lines, unknown verbs, malformed bodies and
     /// non-finite / out-of-range numeric values (see ProtocolError).
@@ -70,9 +76,23 @@ public enum HelperCommand: Equatable, Sendable {
             guard parts.count == 1 else { throw ProtocolError.malformed("AUTO takes no arguments") }
             return .auto
         case "CURVE":
-            guard parts.count == 3 else { throw ProtocolError.malformed("CURVE needs <input> <points>") }
+            guard parts.count == 3 || parts.count == 4 else { throw ProtocolError.malformed("CURVE needs <input> <points>") }
             guard let input = FanControlInput(rawValue: parts[1]) else {
                 throw ProtocolError.badValue("unknown curve input \(parts[1])")
+            }
+            var rampDown: Double?
+            if parts.count == 4 {
+                guard parts[3].hasPrefix("down=") else {
+                    throw ProtocolError.malformed("CURVE option is not down=<rate>: \(parts[3])")
+                }
+                let text = String(parts[3].dropFirst(5))
+                guard let rate = Double(text), rate.isFinite else {
+                    throw ProtocolError.badValue("curve down rate is not a finite number: \(text)")
+                }
+                guard rampDownRange.contains(rate) else {
+                    throw ProtocolError.badValue("curve down rate outside \(number(rampDownRange.lowerBound))...\(number(rampDownRange.upperBound)): \(text)")
+                }
+                rampDown = rate
             }
             let points = try parsePoints(parts[2])
             do {
@@ -80,7 +100,7 @@ public enum HelperCommand: Equatable, Sendable {
             } catch let error as CurveError {
                 throw ProtocolError.badValue(error.description)
             }
-            return .curve(input: input, points: points)
+            return .curve(input: input, points: points, rampDown: rampDown)
         case "FIXED":
             guard parts.count == 2 else { throw ProtocolError.malformed("FIXED needs <percent>") }
             guard let percent = Double(parts[1]), percent.isFinite else {
@@ -137,9 +157,9 @@ public enum HelperCommand: Equatable, Sendable {
         case .ping: return "PING"
         case .status: return "STATUS"
         case .auto: return "AUTO"
-        case .curve(let input, let points):
+        case .curve(let input, let points, let rampDown):
             let list = points.map { "\(Self.number($0.t)):\(Self.number($0.p))" }.joined(separator: ",")
-            return "CURVE \(input.rawValue) \(list)"
+            return "CURVE \(input.rawValue) \(list)" + (rampDown.map { " down=\(Self.number($0))" } ?? "")
         case .fixed(let percent):
             return "FIXED \(Self.number(percent))"
         case .hold(let input, let target):
@@ -173,23 +193,32 @@ public struct HelperStatus: Equatable, Sendable {
     public var writes: Int
     /// e.g. "smc:0x82" when the helper degraded to monitor mode.
     public var error: String?
+    /// Percent of the fan range a curve's down limit holds the fans at right now; nil unless they are slowing towards
+    /// the curve. Only a helper that was sent `down=` ever reports it, so an older app never meets the token.
+    public var rampPercent: Double?
 
     /// `error` while a cruise is paused because the system temperature stopped moving; macOS runs the fans meanwhile.
     public static let holdPausedReason = "paused-system-sensor-stuck"
 
-    public init(mode: HelperMode, inputTemperature: Double? = nil, targetRPM: [Float] = [], writes: Int = 0, error: String? = nil) {
+    public init(mode: HelperMode, inputTemperature: Double? = nil, targetRPM: [Float] = [], writes: Int = 0, error: String? = nil,
+                rampPercent: Double? = nil) {
         self.mode = mode
         self.inputTemperature = inputTemperature
         self.targetRPM = targetRPM
         self.writes = writes
         self.error = error
+        self.rampPercent = rampPercent
     }
 
-    /// "OK mode=<mode> temp=<t|-> rpm=<r0,r1|-> writes=<n>" plus " err=<e>" when error is set.
+    /// "OK mode=<mode> temp=<t|-> rpm=<r0,r1|-> writes=<n>" plus " ramp=<p>" while a descent is limited and
+    /// " err=<e>" when error is set.
     public var serialized: String {
         let temperature = inputTemperature.map { String($0) } ?? "-"
         let rpm = targetRPM.isEmpty ? "-" : targetRPM.map { String($0) }.joined(separator: ",")
         var line = "OK mode=\(mode.rawValue) temp=\(temperature) rpm=\(rpm) writes=\(writes)"
+        if let rampPercent {
+            line += " ramp=\(String(rampPercent))"
+        }
         if let error {
             line += " err=\(error)"
         }
@@ -219,13 +248,21 @@ public struct HelperStatus: Equatable, Sendable {
         }
         guard let writesToken = value(of: "writes=", in: tokens[4]),
               let writes = Int(writesToken) else { return nil }
+        var next = 5
+        var rampPercent: Double? = nil
+        if tokens.count > next, let rampToken = value(of: "ramp=", in: tokens[next]) {
+            guard let parsed = Double(rampToken), parsed.isFinite else { return nil }
+            rampPercent = parsed
+            next += 1
+        }
         var error: String? = nil
-        if tokens.count > 5 {
-            let remainder = tokens[5...].joined(separator: " ")
+        if tokens.count > next {
+            let remainder = tokens[next...].joined(separator: " ")
             guard remainder.hasPrefix("err=") else { return nil }
             error = String(remainder.dropFirst(4))
         }
-        return HelperStatus(mode: mode, inputTemperature: temperature, targetRPM: rpm, writes: writes, error: error)
+        return HelperStatus(mode: mode, inputTemperature: temperature, targetRPM: rpm, writes: writes, error: error,
+                            rampPercent: rampPercent)
     }
 
     /// Returns the text after `prefix` when `token` starts with it, otherwise nil.

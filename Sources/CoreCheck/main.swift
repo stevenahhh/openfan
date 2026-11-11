@@ -418,6 +418,17 @@ expectRoundTrip("CURVE decimals", "CURVE max 40:20.5,60.5:80.25",
                 serializedAs: "CURVE max 40:20.50,60.50:80.25")
 expectRoundTrip("CURVE lowercase verb", "curve max 30:0,90:100",
                 serializedAs: "CURVE max 30:0,90:100")
+expectRoundTrip("CURVE down", "CURVE max 30:0,90:100 down=1",
+                serializedAs: "CURVE max 30:0,90:100 down=1")
+expectRoundTrip("CURVE down decimal", "CURVE cpu 30:0,90:100 down=0.5",
+                serializedAs: "CURVE cpu 30:0,90:100 down=0.50")
+let rampPoints = [CurvePoint(t: 30, p: 0), CurvePoint(t: 90, p: 100)]
+let curveDown = check.expectNoThrow("CURVE down parses") { try HelperCommand.parse("CURVE max 30:0,90:100 down=2.5") }
+check.expectEqual(curveDown, HelperCommand.curve(input: .max, points: rampPoints, rampDown: 2.5), "down=2.5 parses to a 2.5 %/s limit")
+let curvePlain = check.expectNoThrow("CURVE without down parses") { try HelperCommand.parse("CURVE max 30:0,90:100") }
+check.expectEqual(curvePlain, HelperCommand.curve(input: .max, points: rampPoints, rampDown: nil), "a curve without down has no limit")
+check.expectEqual(HelperCommand.curve(input: .max, points: rampPoints).serialized, "CURVE max 30:0,90:100",
+                  "a curve without a limit is the three-token line an older helper accepts")
 expectRoundTrip("FIXED int", "FIXED 40", serializedAs: "FIXED 40")
 expectRoundTrip("FIXED decimal", "FIXED 62.5", serializedAs: "FIXED 62.50")
 expectRoundTrip("HOLD system", "HOLD system 45", serializedAs: "HOLD system 45")
@@ -456,6 +467,9 @@ expectProtoError("CURVE non-finite percent", .badValue("non-finite percent: nan"
 expectProtoError("CURVE bad number", .badValue("non-finite percent: abc"), "CURVE max 50:0,60:abc")
 expectProtoError("CURVE 13 points", .badValue(CurveError.tooManyPoints(13).description),
                  "CURVE max 0:0,5:5,10:10,15:15,20:20,25:25,30:30,35:35,40:40,45:45,50:50,55:55,60:60")
+for option in ["fast", "down=", "down=0", "down=-1", "down=500", "down=nan", "down=inf", "down=1 down=2"] {
+    check.expectThrows("CURVE \(option) is rejected") { _ = try HelperCommand.parse("CURVE max 50:0,60:10 \(option)") }
+}
 expectProtoError("FIXED no arg", .malformed("FIXED needs <percent>"), "FIXED")
 expectProtoError("FIXED too many args", .malformed("FIXED needs <percent>"), "FIXED 40 50")
 expectProtoError("FIXED over 100", .badValue("fixed percent outside 0...100: 101"), "FIXED 101")
@@ -496,6 +510,14 @@ let statusHold = HelperStatus(mode: .hold, inputTemperature: 45, targetRPM: [316
 check.expectEqual(statusHold.serialized, "OK mode=hold temp=45.0 rpm=3166.0,3168.0 writes=9", "status hold serialized")
 check.expectEqual(HelperStatus.parse(statusHold.serialized), statusHold, "status hold round trip")
 
+let statusRamp = HelperStatus(mode: .curve, inputTemperature: 48, targetRPM: [5000, 5000], writes: 21, rampPercent: 62.5)
+check.expectEqual(statusRamp.serialized, "OK mode=curve temp=48.0 rpm=5000.0,5000.0 writes=21 ramp=62.5", "status with a descent serialized")
+check.expectEqual(HelperStatus.parse(statusRamp.serialized), statusRamp, "status round trip with a descent")
+let statusRampError = HelperStatus(mode: .curve, inputTemperature: 48, targetRPM: [5000], writes: 2, error: "smc:0x82", rampPercent: 10)
+check.expectEqual(HelperStatus.parse(statusRampError.serialized), statusRampError, "status round trip with a descent and an error")
+check.expectEqual(HelperStatus.parse(statusCurve.serialized)?.rampPercent, Double?.none, "a status without the token reports no descent")
+check.expect(HelperStatus.parse("OK mode=curve temp=50 rpm=- writes=0 ramp=abc") == nil, "status parse rejects a non-numeric descent")
+check.expect(HelperStatus.parse("OK mode=curve temp=50 rpm=- writes=0 ramp=nan") == nil, "status parse rejects a non-finite descent")
 check.expect(HelperStatus.parse("") == nil, "status parse rejects empty")
 check.expect(HelperStatus.parse("garbage") == nil, "status parse rejects junk")
 check.expect(HelperStatus.parse("OK temp=50 rpm=- writes=0") == nil, "status parse rejects missing mode")

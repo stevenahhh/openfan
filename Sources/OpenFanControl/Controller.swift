@@ -33,7 +33,8 @@ public struct FanObservation: Equatable, Sendable {
 }
 
 /// Pure decision engine: temperature plus per-fan observation in, ordered fan writes out.
-/// It owns hysteresis, the write dead band, the panic override and re-engagement after a reclaim.
+/// It owns hysteresis, the write dead band, the optional down limit, the panic override and re-engagement after a
+/// reclaim.
 public final class FanController {
     public let fans: [FanInfo]
     public let config: ControllerConfig
@@ -48,6 +49,16 @@ public final class FanController {
     private var panicked = false
     private var usedTemperature: Float?
     private var lastTargets: [Float?]
+    /// Fastest a curve may bring the fans down, percent per second; nil follows the curve down at once.
+    private var rampDown: Double?
+    /// Percent the last curve tick commanded; nil lets the next tick take the curve's value as it is.
+    private var rampPercent: Double?
+    /// True while the down limit holds the fans above the curve.
+    private var ramping = false
+
+    /// The percent the fans are held at while the down limit keeps them above the curve; nil once they are back on
+    /// it. STATUS carries it so the app can draw the descent.
+    public var rampingPercent: Double? { mode == .curve && ramping ? rampPercent : nil }
 
     /// Input the active hold follows; nil unless hold is the current mode.
     public var holdInput: FanControlInput? { mode == .hold ? input : nil }
@@ -73,8 +84,19 @@ public final class FanController {
         clearControl()
     }
 
-    public func setCurve(_ curve: FanCurve, input: FanControlInput) throws {
+    /// A new curve always starts at its own value: the down limit smooths a Mac cooling off, not a preset the user
+    /// just picked.
+    public func setCurve(_ curve: FanCurve, input: FanControlInput, rampDown: Double? = nil) throws {
         try curve.validate()
+        if let rampDown {
+            let range = HelperCommand.rampDownRange
+            guard rampDown.isFinite, range.contains(rampDown) else {
+                throw ProtocolError.badValue("curve down rate must be finite and within \(range.lowerBound)...\(range.upperBound)")
+            }
+        }
+        self.rampDown = rampDown
+        self.rampPercent = nil
+        self.ramping = false
         self.curve = curve
         self.input = input
         self.fixedPercent = nil
@@ -144,6 +166,13 @@ public final class FanController {
         holdLoop = HoldLoop(target: loop.target, config: loop.config)
     }
 
+    /// Forgets the speed the down limit was coming from, so a Mac that cooled while asleep does not wake to fans
+    /// still slowing from where they were.
+    public func restartRamp() {
+        rampPercent = nil
+        ramping = false
+    }
+
     public func noteWriteFailure(_ reason: String) {
         lastError = reason
         mode = .monitor
@@ -154,7 +183,7 @@ public final class FanController {
     ///   - safetyTemperature: the hottest CPU/GPU sensor. The panic latch watches the larger of the two, so an
     ///     input that runs cool (battery, a single die) can never hide an overheating SoC. Nil or an invalid
     ///     value leaves the latch on `temperature` alone.
-    ///   - dt: seconds since the previous hold tick; nil uses 1.0. Ignored outside hold mode.
+    ///   - dt: seconds since the previous tick; nil uses 1.0. Only a hold and a curve's down limit use it.
     public func tick(temperature: Float?, safetyTemperature: Float? = nil, fans observations: [FanObservation], dt: Double? = nil) -> [FanAction] {
         guard mode == .curve || mode == .fixed || mode == .panic || mode == .hold else {
             return []
@@ -206,6 +235,31 @@ public final class FanController {
 
         updateUsedTemperature(t)
 
+        // Every fan runs at the same percent, so the down limit is applied once, before the loop.
+        var curvePercent: Double?
+        var settled = false
+        if let curve {
+            var percent = curve.percent(at: Double(usedTemperature ?? t))
+            if panicked {
+                // Panic runs the fans at Mx, so the way down afterwards starts from the top.
+                rampPercent = 100
+                ramping = false
+            } else {
+                let wasRamping = ramping
+                if let rate = rampDown, let last = rampPercent, percent < last {
+                    let limited = max(percent, last - rate * max(dt ?? 1.0, 0))
+                    ramping = limited > percent
+                    percent = limited
+                } else {
+                    ramping = false
+                }
+                // Steps this small sit inside the dead band, which would leave the fans just above the curve.
+                settled = wasRamping && !ramping
+                rampPercent = percent
+            }
+            curvePercent = percent
+        }
+
         var actions: [FanAction] = []
         for i in self.fans.indices {
             let fan = self.fans[i]
@@ -214,8 +268,7 @@ public final class FanController {
             let target: Float
             if panicked {
                 target = fan.maxRPM
-            } else if let curve {
-                let percent = curve.percent(at: Double(usedTemperature ?? t))
+            } else if let percent = curvePercent {
                 // Zero fan: a curve at 0 % hands the fan back to macOS, which keeps it stopped while the Mac is
                 // cool. No target below Mn is ever written; leaving the zone re-engages target-first below.
                 if percent <= 0 {
@@ -233,7 +286,7 @@ public final class FanController {
             // even when the target sits inside the dead band. Writing md = 1 before a target
             // has ever been written stops the fan.
             let reEngage = !observation.manual
-            let force = reEngage || enteringPanic || leavingPanic
+            let force = reEngage || enteringPanic || leavingPanic || settled
             if force || exceedsDeadband(target, fan: i) {
                 actions.append(.setTarget(fan: fan.index, rpm: target))
             }
@@ -264,6 +317,9 @@ public final class FanController {
         panicked = false
         usedTemperature = nil
         lastTargets = Array(repeating: nil, count: fans.count)
+        rampDown = nil
+        rampPercent = nil
+        ramping = false
     }
 
     /// Fan 0's observed rpm as a percent of its own range. Nil below `Mn` or when the reading is missing.
