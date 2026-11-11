@@ -82,6 +82,8 @@ public final class PopoverViewController: NSViewController {
         static let width: CGFloat = 380
         static let margin: CGFloat = 16
         static let inner: CGFloat = width - margin * 2
+        /// Long enough to read as a change, short enough not to be waited for.
+        static let transition: TimeInterval = 0.18
     }
 
     /// Called with the content size the popover should take. A shown NSPopover follows `contentSize`, not
@@ -95,7 +97,10 @@ public final class PopoverViewController: NSViewController {
     private let warningLabel = NSTextField(wrappingLabelWithString: "")
     private let slider: PresetSliderView
     private let editor: CurveEditorPanel
-    private let settingsPanel: SettingsPanel
+    /// Built the first time the settings page is shown: most openings never visit it, and its buttons took a fifth
+    /// of the time the popover needs to appear.
+    private var settingsPanel: SettingsPanel?
+    private let pages = NSView()
     let footer = PopoverFooter(width: Layout.inner)
     let helpBubble = HelpBubbleView()
     private var snapshot: LiveSnapshot?
@@ -116,7 +121,6 @@ public final class PopoverViewController: NSViewController {
         let slider = PresetSliderView(width: Layout.inner)
         self.slider = slider
         self.editor = CurveEditorPanel(store: store, picker: slider, width: Layout.inner)
-        self.settingsPanel = SettingsPanel(settings: settings, width: Layout.inner)
         super.init(nibName: nil, bundle: nil)
         header.setShowsRPM(settings.settings.fanUnitsRPM, notify: false)
         header.onUnitsChanged = { [weak self] showsRPM in
@@ -138,8 +142,6 @@ public final class PopoverViewController: NSViewController {
             self.editor.addPreset(copying: self.store.library.activePreset)
         }
         editor.onLibraryChange = { [weak self] in self?.libraryChanged() }
-        settingsPanel.onChange = { [weak self] in self?.actions.settingsChanged() }
-        settingsPanel.isHidden = true
         editor.setGradual(settings.settings.gradualCooldown)
         editor.onGradualChange = { [weak self] gradual in
             guard let self else { return }
@@ -165,7 +167,12 @@ public final class PopoverViewController: NSViewController {
         let separator = NSBox()
         separator.boxType = .separator
 
-        let sections: [NSView] = [header, warningLabel, editor, settingsPanel, separator, footer]
+        // Both pages share one slot as tall as the editor, the taller of the two, so turning the page fades one into
+        // the other and the popover keeps its size.
+        addPage(editor)
+        editor.bottomAnchor.constraint(equalTo: pages.bottomAnchor).isActive = true
+
+        let sections: [NSView] = [header, warningLabel, pages, separator, footer]
         let stack = NSStackView(views: sections)
         stack.orientation = .vertical
         stack.alignment = .leading
@@ -210,8 +217,8 @@ public final class PopoverViewController: NSViewController {
 
         let warning = warning(for: snapshot)
         let text = warning ?? ""
-        if warningLabel.stringValue != text { warningLabel.stringValue = text }
-        warningLabel.isHidden = warning == nil
+        let warningChanged = warningLabel.stringValue != text
+        if warningChanged { setWarning(text) }
 
         var readout = HeaderReadout(reading: snapshot.reading, fans: snapshot.fans)
         readout.hasBattery = snapshot.hasBattery
@@ -227,13 +234,50 @@ public final class PopoverViewController: NSViewController {
         footer.update(offer: snapshot.update)
 
         if showingSettings {
-            settingsPanel.update(values: MenuBarValues(reading: snapshot.reading, presetName: store.library.activePreset?.name ?? "Auto"))
+            settingsPanel?.update(values: MenuBarValues(reading: snapshot.reading, presetName: store.library.activePreset?.name ?? "Auto"))
         }
 
         let temperature = editor.activeInput.flatMap { snapshot.reading?.input($0) }
         editor.updateLive(temperature: temperature, speed: FanSpeedFormat(fan: snapshot.fans.first, showsRPM: header.showsRPM),
                           fanPercent: Self.fanPercent(snapshot),
                           rampPercent: snapshot.helperStatus?.mode == .curve ? snapshot.helperStatus?.rampPercent : nil)
+    }
+
+    private func addPage(_ page: NSView) {
+        page.translatesAutoresizingMaskIntoConstraints = false
+        pages.addSubview(page)
+        NSLayoutConstraint.activate([
+            page.topAnchor.constraint(equalTo: pages.topAnchor),
+            page.leadingAnchor.constraint(equalTo: pages.leadingAnchor),
+            page.trailingAnchor.constraint(equalTo: pages.trailingAnchor),
+        ])
+    }
+
+    private func settingsPage() -> SettingsPanel {
+        if let settingsPanel { return settingsPanel }
+        let panel = SettingsPanel(settings: settings, width: Layout.inner)
+        panel.onChange = { [weak self] in self?.actions.settingsChanged() }
+        addPage(panel)
+        panel.bottomAnchor.constraint(lessThanOrEqualTo: pages.bottomAnchor).isActive = true
+        settingsPanel = panel
+        return panel
+    }
+
+    /// A warning is the one thing that still changes the popover's height, so it slides in and out with the resize
+    /// instead of snapping. Before the popover is on screen there is nothing to animate.
+    private func setWarning(_ text: String) {
+        let change = { [self] in
+            warningLabel.stringValue = text
+            warningLabel.isHidden = text.isEmpty
+            resize()
+        }
+        guard view.window != nil else { return change() }
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = Layout.transition
+            context.allowsImplicitAnimation = true
+            change()
+            view.layoutSubtreeIfNeeded()
+        }
     }
 
     private func resize() {
@@ -330,10 +374,22 @@ public final class PopoverViewController: NSViewController {
         showingSettings.toggle()
         view.window?.makeFirstResponder(nil)
         footer.dismissHelp()
-        editor.isHidden = showingSettings
-        settingsPanel.isHidden = !showingSettings
+        let settingsPanel = settingsPage()
+        let incoming: NSView = showingSettings ? settingsPanel : editor
+        let outgoing: NSView = showingSettings ? editor : settingsPanel
+        incoming.alphaValue = 0
+        incoming.isHidden = false
+        NSAnimationContext.runAnimationGroup({ context in
+            context.duration = Layout.transition
+            incoming.animator().alphaValue = 1
+            outgoing.animator().alphaValue = 0
+        }, completionHandler: { [weak self] in
+            // The page may have been turned back before the fade ended, so the flag decides, not this closure's pair.
+            guard let self else { return }
+            self.editor.isHidden = self.showingSettings
+            self.settingsPanel?.isHidden = !self.showingSettings
+        })
         refreshHeader()
-        resize()
     }
 
     @objc private func quitTapped(_ sender: Any?) {
