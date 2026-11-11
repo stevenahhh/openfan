@@ -22,6 +22,7 @@ extension PopoverViewController {
             With CPU or GPU as the input, 95 \u{00B0}C or above still forces full speed.
             Where a curve reaches the bottom, the fans go back to macOS (shown as Auto), which stops them on a cool Mac.
             Slow down gradually lets the fans fade out as the Mac cools instead of dropping at once. It applies to every curve.
+            While they fade, a red line shows the speed the fans still hold; it sinks until it meets the curve.
             Speeds use the unit of the fan row: click it to switch between a percentage (0 % is the fan's slowest speed, 100 % its fastest) and rpm.
             """
     }

@@ -99,6 +99,21 @@ check.expectClose(silent.percent(at: 80), 35, tolerance: 0.0001, "interpolate se
 check.expectClose(silent.percent(at: 95), 100, tolerance: 0.0001, "last point exact")
 check.expectClose(silent.percent(at: 120), 100, tolerance: 0.0001, "clamp above last point")
 
+// MARK: - FanCurve.temperature(reaching:)
+
+check.expectClose(silent.temperature(reaching: 7.5) ?? -1, 60, tolerance: 0.0001, "a held speed meets the curve inside a segment")
+check.expectClose(silent.temperature(reaching: 15) ?? -1, 70, tolerance: 0.0001, "a speed at a vertex meets the curve at that vertex")
+check.expectClose(silent.temperature(reaching: 35) ?? -1, 80, tolerance: 0.0001, "the second segment is searched too")
+check.expectClose(silent.temperature(reaching: 100) ?? -1, 95, tolerance: 0.0001, "full speed is reached at the last point")
+check.expectClose(silent.temperature(reaching: 0) ?? -1, FanCurve.minTemperature, tolerance: 0.0001,
+                  "a speed the curve never goes below is reached from the coldest end")
+let capped = FanCurve(points: [CurvePoint(t: 40, p: 20), CurvePoint(t: 100, p: 80)])
+check.expectEqual(capped.temperature(reaching: 90), Double?.none, "a speed above the whole curve is never reached")
+for held in [3.0, 12.5, 40, 77, 99] {
+    let meets = silent.temperature(reaching: held) ?? -1
+    check.expectClose(silent.percent(at: meets), held, tolerance: 0.0001, "the curve asks for \(held) % exactly where it is reached")
+}
+
 // MARK: - PresetLibrary.defaults
 
 let defaults = PresetLibrary.defaults()
