@@ -89,6 +89,11 @@ what the menu bar will say:
 Anything else is shown as typed, up to 40 characters. An empty field shows only the memory pressure dot, which can be
 turned off on the same page; **Default** restores `{max}° {rpm}`.
 
+Under the graph of a curve preset there is a **Slow down gradually** box. With it on, a curve lets the fans fall
+about 1 % of their range per second instead of following the temperature down at once, so a burst fades out over a
+minute or so. A rise, the 95 °C full-speed rule and a preset you pick still apply immediately. It is off by default,
+applies to every curve preset at once and does not change Cruise presets, which is why it is not shown there.
+
 Your presets live in `~/Library/Application Support/OpenFan/presets.json` and the settings in `settings.json` next to
 it. An unreadable settings file is kept as `settings.json.bak` and the defaults are used.
 

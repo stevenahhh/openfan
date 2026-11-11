@@ -646,11 +646,13 @@ do {
     store.setTemplate("CPU {cpu}")
     store.setShowPressureDot(false)
     store.setFanUnitsRPM(true)
+    store.setGradualCooldown(true)
     _ = check.expectNoThrow("settings save") { try store.save() }
     let reloaded = SettingsStore(url: url).load()
     check.expectEqual(reloaded.menuBarTemplate, "CPU {cpu}", "a saved template survives a reload")
     check.expectEqual(reloaded.showPressureDot, false, "a saved dot toggle survives a reload")
     check.expectEqual(reloaded.fanUnitsRPM, true, "a saved fan unit choice survives a reload")
+    check.expectEqual(reloaded.gradualCooldown, true, "a saved gradual cool-down survives a reload")
 
     try? Data("{ not json".utf8).write(to: url)
     check.expectEqual(SettingsStore(url: url).load(), AppSettings(), "a corrupt file loads the defaults")
@@ -660,6 +662,7 @@ do {
     try? Data(#"{"menuBarTemplate":"x"}"#.utf8).write(to: url)
     check.expectEqual(SettingsStore(url: url).load().showPressureDot, true, "a missing key takes its default")
     check.expectEqual(SettingsStore(url: url).load().fanUnitsRPM, false, "fan units default to percent")
+    check.expectEqual(SettingsStore(url: url).load().gradualCooldown, false, "gradual cool-down is off unless asked for")
 
     try? Data(#"{"menuBarTemplate":"   "}"#.utf8).write(to: url)
     check.expectEqual(SettingsStore(url: url).load().menuBarTemplate, "   ", "a blank template is kept as written")

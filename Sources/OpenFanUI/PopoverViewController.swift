@@ -140,6 +140,12 @@ public final class PopoverViewController: NSViewController {
         editor.onLibraryChange = { [weak self] in self?.libraryChanged() }
         settingsPanel.onChange = { [weak self] in self?.actions.settingsChanged() }
         settingsPanel.isHidden = true
+        editor.setGradual(settings.settings.gradualCooldown)
+        editor.onGradualChange = { [weak self] gradual in
+            guard let self else { return }
+            self.settings.setGradualCooldown(gradual)
+            self.saveSettings()
+        }
         footer.menuProvider = { [weak self] in self?.buildMenu() ?? NSMenu() }
         footer.onUpdate = { [weak self] in self?.actions.installUpdate() }
         footer.onHelpChange = { [weak self] shown in
@@ -212,6 +218,7 @@ public final class PopoverViewController: NSViewController {
         header.update(readout)
         editor.setBatteryAvailable(snapshot.hasBattery)
         editor.setSystemAvailable(snapshot.hasSystem)
+        editor.setGradualAvailable(!snapshot.helperOutdated)
         if (snapshot.hasSystem, snapshot.hasForceTest) != (visibility.hasSystem, visibility.hasForceTest) {
             visibility = (snapshot.hasSystem, snapshot.hasForceTest)
             slider.reload(library: visibleLibrary)
