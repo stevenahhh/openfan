@@ -8,7 +8,7 @@ public struct AppSettings: Codable, Equatable, Sendable {
     public var version: Int
     public var menuBarTemplate: String
     public var showPressureDot: Bool
-    /// Header fan values: rpm when true, percent of full speed when false.
+    /// Header fan values: rpm when true, percent of the fan's range when false.
     public var fanUnitsRPM: Bool
 
     public init(

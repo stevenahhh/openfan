@@ -61,7 +61,8 @@
 The menu bar shows `52° 2.3k` by default. Clicking it opens the popover:
 
 - **Header**: CPU, GPU and battery temperatures and one column per fan. Click the fan row to switch between percent
-  of full speed and rpm; the choice is remembered.
+  (0 % is the fan's slowest speed, 100 % its fastest, the same scale the curve uses) and rpm; the choice is
+  remembered.
 - **Presets**: **Auto** hands the fans back to macOS (a mode, not a preset). **Silent**, **Balanced**,
   **Performance** and **Full** are built in and read-only; duplicate one to make it yours. Full holds every fan at
   maximum speed. Clicking a preset activates it and shows its curve.

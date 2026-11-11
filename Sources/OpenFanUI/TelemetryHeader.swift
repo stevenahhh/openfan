@@ -5,12 +5,14 @@ struct HeaderReadout: Equatable {
     struct Fan: Equatable {
         var index: Int
         var rpm: Float?
+        var minRPM: Float?
         var maxRPM: Float?
 
-        /// Percent of the fan's maximum speed, so a stopped fan reads 0 % and a fan at Mn does not read 0 %.
+        /// Percent of the fan's own range, the scale a curve is drawn on: Mn reads 0 % and Mx 100 %. A stopped fan
+        /// reads 0 % as well; the rpm view tells the two apart.
         var percent: Float? {
-            guard let rpm, let maxRPM, maxRPM > 0 else { return nil }
-            return min(max(rpm / maxRPM * 100, 0), 100)
+            guard let rpm, let minRPM, let maxRPM, maxRPM > minRPM else { return nil }
+            return min(max((rpm - minRPM) / (maxRPM - minRPM) * 100, 0), 100)
         }
     }
 
@@ -31,6 +33,7 @@ struct HeaderReadout: Equatable {
         let fans = info.map { limit in
             Fan(index: limit.index,
                 rpm: reading?.fans.first { $0.index == limit.index }?.rpm,
+                minRPM: limit.minRPM,
                 maxRPM: limit.maxRPM)
         }
         fanRows = Self.rows(of: fans)
@@ -116,7 +119,7 @@ private final class HeaderRow: NSView {
 }
 
 /// The popover's top rows: CPU, GPU and battery temperatures, then one column per fan. Fan values are a percentage
-/// of full speed until the fan row is clicked; the choice is handed to the owner to remember.
+/// of the fan's range until the fan row is clicked; the choice is handed to the owner to remember.
 final class TelemetryHeaderView: NSView {
     var onUnitsChanged: ((Bool) -> Void)?
 
