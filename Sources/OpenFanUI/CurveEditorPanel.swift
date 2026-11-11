@@ -4,6 +4,8 @@ import OpenFanSMC
 
 final class CurveEditorPanel: NSView {
     var onLibraryChange: (() -> Void)?
+    /// The setting is global, yet its box sits with the curve: that is where its effect shows, and only a curve has one.
+    var onGradualChange: ((Bool) -> Void)?
 
     var activeInput: FanControlInput? { draft?.input }
 
@@ -35,6 +37,7 @@ final class CurveEditorPanel: NSView {
     private let inputPopup = NSPopUpButton(frame: .zero, pullsDown: false)
     private let duplicateButton = NSButton(title: "Duplicate", target: nil, action: nil)
     private let deleteButton = NSButton(title: "Delete", target: nil, action: nil)
+    private let gradualToggle = NSButton(checkboxWithTitle: "Slow down gradually", target: nil, action: nil)
     private let noteLabel = NSTextField(wrappingLabelWithString: "")
     private let errorLabel = NSTextField(labelWithString: "")
     private let placeholder = NSTextField(wrappingLabelWithString: "")
@@ -80,15 +83,47 @@ final class CurveEditorPanel: NSView {
         refreshInputItems()
     }
 
+    func setGradual(_ on: Bool) {
+        gradualToggle.state = on ? .on : .off
+    }
+
+    /// An older helper refuses the option, so the box says why it cannot be changed instead of doing nothing.
+    func setGradualAvailable(_ available: Bool) {
+        gradualToggle.isEnabled = available
+        let tip = available ? Self.gradualHelp : "Update the helper from the menu to use this."
+        if gradualToggle.toolTip != tip { gradualToggle.toolTip = tip }
+    }
+
+    static let gradualHelp = "As the Mac cools, the fans slow by about \(HelperCommand.number(AppSettings.gradualCooldownRate)) % "
+        + "of their range per second instead of dropping at once. Applies to every curve preset."
+
     /// `fanPercent` is the fans' real speed (nil while stopped); a cruise preset draws it instead of a curve value.
-    func updateLive(temperature: Float?, speed: FanSpeedFormat, fanPercent: Double? = nil) {
+    /// `rampPercent` is the speed a gradual cool-down still holds the fans at; only a curve preset draws it.
+    func updateLive(temperature: Float?, speed: FanSpeedFormat, fanPercent: Double? = nil, rampPercent: Double? = nil) {
         graph.setCruisePercent(fanPercent)
+        graph.setRamp(draft?.isHold == false ? rampPercent : nil)
         graph.setLive(temperature: temperature, speed: speed)
     }
 
     /// The temperature band a cruise graph shows: wide enough to see the live reading approach the target.
     static func cruiseAxis(for input: FanControlInput) -> ClosedRange<Double> {
         input == .system ? 30...60 : 50...110
+    }
+
+    /// The height of the longest note the editor can show, so the note's box is that tall for every preset.
+    private static func tallestNote(width: CGFloat, font: NSFont) -> CGFloat {
+        var samples = PresetLibrary.builtIns.filter { !$0.isFullSpeed }
+        for input in FanControlInput.allCases {
+            samples.append(Preset(id: PresetLibrary.quietHoldID, name: "", input: input, points: [], target: 45))
+            samples.append(Preset(id: "", name: "", input: input, points: [], target: 45))
+        }
+        let probe = NSTextField(wrappingLabelWithString: "")
+        probe.font = font
+        let limit = NSSize(width: width, height: .greatestFiniteMagnitude)
+        return samples.reduce(0) { tallest, preset in
+            probe.stringValue = cruiseNote(for: preset)
+            return max(tallest, ceil(probe.sizeThatFits(limit).height))
+        }
     }
 
     private static func cruiseNote(for preset: Preset) -> String {
@@ -157,6 +192,12 @@ final class CurveEditorPanel: NSView {
             button.controlSize = .small
             button.bezelStyle = .rounded
         }
+        gradualToggle.target = self
+        gradualToggle.action = #selector(gradualToggled(_:))
+        gradualToggle.controlSize = .small
+        gradualToggle.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
+        gradualToggle.toolTip = Self.gradualHelp
+        gradualToggle.setContentCompressionResistancePriority(.required, for: .horizontal)
 
         noteLabel.font = .systemFont(ofSize: 10)
         noteLabel.textColor = .secondaryLabelColor
@@ -173,10 +214,12 @@ final class CurveEditorPanel: NSView {
         nameRow.orientation = .horizontal
         nameRow.spacing = 8
         nameRow.alignment = .centerY
+        // The name takes the spare width, which keeps the input at the trailing edge on every opening.
+        nameRow.distribution = .fill
 
         let spacer = NSView()
         spacer.setContentHuggingPriority(NSLayoutConstraint.Priority(rawValue: 1), for: .horizontal)
-        buttonRow.setViews([duplicateButton, deleteButton, spacer], in: .leading)
+        buttonRow.setViews([duplicateButton, deleteButton, spacer, gradualToggle], in: .leading)
         buttonRow.orientation = .horizontal
         buttonRow.spacing = 8
         buttonRow.alignment = .centerY
@@ -203,9 +246,18 @@ final class CurveEditorPanel: NSView {
         stack.orientation = .vertical
         stack.alignment = .leading
         stack.spacing = 8
+        // A hidden row keeps its place and every row has one height, so the panel is the same size for every preset
+        // and a click never moves what sits below it.
+        stack.detachesHiddenViews = false
         for row in rows {
             row.widthAnchor.constraint(equalToConstant: width).isActive = true
         }
+        NSLayoutConstraint.activate([
+            nameRow.heightAnchor.constraint(equalToConstant: ceil(max(nameEditor.fittingSize.height, inputPopup.fittingSize.height))),
+            buttonRow.heightAnchor.constraint(equalToConstant: ceil(max(duplicateButton.fittingSize.height, gradualToggle.fittingSize.height))),
+            noteLabel.heightAnchor.constraint(equalToConstant: Self.tallestNote(width: width, font: noteLabel.font ?? .systemFont(ofSize: 10))),
+            errorLabel.heightAnchor.constraint(equalToConstant: ceil(errorLabel.fittingSize.height)),
+        ])
 
         stack.translatesAutoresizingMaskIntoConstraints = false
         addSubview(stack)
@@ -243,6 +295,8 @@ final class CurveEditorPanel: NSView {
         duplicateButton.title = builtIn ? "Duplicate to Edit" : "Duplicate"
         deleteButton.isHidden = builtIn
         updateDeleteTitle()
+        // A cruise has its own slew, so the box would promise something it does not do there.
+        gradualToggle.isHidden = draft.isHold
 
         let note = draft.isHold ? Self.cruiseNote(for: draft) : draft.editorNote
         if noteLabel.stringValue != note { noteLabel.stringValue = note }
@@ -379,6 +433,10 @@ final class CurveEditorPanel: NSView {
         }
         disarmDelete()
         apply(draft)
+    }
+
+    @objc private func gradualToggled(_ sender: NSButton) {
+        onGradualChange?(sender.state == .on)
     }
 
     @objc private func duplicateTapped(_ sender: Any?) {

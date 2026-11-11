@@ -107,6 +107,13 @@ final class CurveEditorView: NSView {
         }
     }
 
+    /// The speed a gradual cool-down holds the fans at, in percent of their range; nil once they are back on the curve.
+    func setRamp(_ percent: Double?) {
+        if live.setRamp(percent) {
+            renderLive()
+        }
+    }
+
     override func layout() {
         super.layout()
         renderLive()

@@ -61,7 +61,8 @@
 The menu bar shows `52° 2.3k` by default. Clicking it opens the popover:
 
 - **Header**: CPU, GPU and battery temperatures and one column per fan. Click the fan row to switch between percent
-  of full speed and rpm; the choice is remembered.
+  (0 % is the fan's slowest speed, 100 % its fastest, the same scale the curve uses) and rpm; the choice is
+  remembered.
 - **Presets**: **Auto** hands the fans back to macOS (a mode, not a preset). **Silent**, **Balanced**,
   **Performance** and **Full** are built in and read-only; duplicate one to make it yours. Full holds every fan at
   maximum speed. Clicking a preset activates it and shows its curve.
@@ -87,6 +88,15 @@ what the menu bar will say:
 
 Anything else is shown as typed, up to 40 characters. An empty field shows only the memory pressure dot, which can be
 turned off on the same page; **Default** restores `{max}° {rpm}`.
+
+Under the graph of a curve preset there is a **Slow down gradually** box. With it on, a curve lets the fans fall
+about 1 % of their range per second instead of following the temperature down at once, so a burst fades out over a
+minute or so. A rise, the 95 °C full-speed rule and a preset you pick still apply immediately. It is off by default,
+applies to every curve preset at once and does not change Cruise presets, which is why it is not shown there.
+While the fans fade out, the graph draws the speed they still hold as a red line, from the cold end of the graph to
+where the curve climbs back up to it, with a red dot and a readout at the current temperature. The line sinks until
+it meets the curve; below the curve's bottom edge that means all the way down to the point where the fans go back to
+macOS.
 
 Your presets live in `~/Library/Application Support/OpenFan/presets.json` and the settings in `settings.json` next to
 it. An unreadable settings file is kept as `settings.json.bak` and the defaults are used.

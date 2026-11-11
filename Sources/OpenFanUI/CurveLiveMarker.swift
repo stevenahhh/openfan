@@ -2,13 +2,22 @@ import AppKit
 import OpenFanCore
 
 /// The once-a-second overlay on the graph: a dashed line at the current temperature, a dot on the curve, and a pill
-/// with the temperature and the speed the curve asks for. It is built from layers, so an update never redraws the graph's backing store.
+/// with the temperature and the speed the curve asks for. While a gradual cool-down holds the fans above the curve, a
+/// red line marks the speed they are held at, from the cold end of the graph to where the curve takes over again, and
+/// the pill moves to a red dot on it: where the fans are, not where the curve will bring them.
+/// It is built from layers, so an update never redraws the graph's backing store.
 final class CurveLiveMarker {
     private let line = CAShapeLayer()
+    private let rampLine = CAShapeLayer()
     private let dot = CAShapeLayer()
+    private let rampDot = CAShapeLayer()
     private let pill = CALayer()
     private let text = CATextLayer()
 
+    private var rampPercent: Double?
+    private var descending = false
+    private var liveTint: CGColor?
+    private var rampTint: CGColor?
     private var temperature: Float?
     private var speed = FanSpeedFormat(fan: nil, showsRPM: false)
 
@@ -23,6 +32,10 @@ final class CurveLiveMarker {
         line.lineWidth = CurveStyle.liveLineWidth
         line.lineDashPattern = [5, 3]
         dot.lineWidth = CurveStyle.dotRingWidth
+        rampLine.fillColor = nil
+        rampLine.lineWidth = CurveStyle.curveWidth
+        rampLine.lineCap = .round
+        rampDot.lineWidth = CurveStyle.dotRingWidth
         pill.borderWidth = 1
         text.font = CurveStyle.pillFont
         text.fontSize = CurveStyle.pillFont.pointSize
@@ -37,12 +50,13 @@ final class CurveLiveMarker {
         }
     }
 
-    private var allLayers: [CALayer] {
-        [line, dot, pill, text]
+    /// Back to front: the held speed's line lies under both dots, the pill over everything.
+    private var shapeLayers: [CALayer] {
+        [line, rampLine, dot, rampDot, pill]
     }
 
-    private var shapeLayers: [CALayer] {
-        [line, dot, pill]
+    private var rampLayers: [CALayer] {
+        [rampLine, rampDot]
     }
 
     func attach(to host: CALayer, contentsScale: CGFloat) {
@@ -64,12 +78,27 @@ final class CurveLiveMarker {
         return true
     }
 
+    /// Keeps the held speed as shown (0.1 %). Returns true when it changed.
+    @discardableResult
+    func setRamp(_ percent: Double?) -> Bool {
+        let rounded = percent.flatMap { $0.isFinite ? ($0 * 10).rounded() / 10 : nil }
+        guard rounded != rampPercent else { return false }
+        rampPercent = rounded
+        return true
+    }
+
     func applyColors() {
         let orange = NSColor.systemOrange.cgColor
+        let red = NSColor.systemRed.cgColor
+        liveTint = orange
+        rampTint = red
         line.strokeColor = orange
         dot.fillColor = orange
         dot.strokeColor = NSColor.textBackgroundColor.cgColor
-        pill.borderColor = orange
+        rampLine.strokeColor = red
+        rampDot.fillColor = red
+        rampDot.strokeColor = NSColor.textBackgroundColor.cgColor
+        pill.borderColor = descending ? red : orange
         pill.backgroundColor = NSColor.controlBackgroundColor.cgColor
         text.foregroundColor = NSColor.labelColor.cgColor
     }
@@ -82,14 +111,25 @@ final class CurveLiveMarker {
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         defer { CATransaction.commit() }
-        for layer in shapeLayers where layer.isHidden == visible {
+        for layer in [line, dot, pill] where layer.isHidden == visible {
             layer.isHidden = !visible
         }
-        guard visible, let temperature else { return }
+        guard visible, let temperature else {
+            for layer in rampLayers where !layer.isHidden { layer.isHidden = true }
+            return
+        }
 
+        let curve = FanCurve(points: points)
         let clamped = min(max(Double(temperature), plot.tMin), plot.tMax)
-        let percent = cruise ? (cruisePercent ?? 0) : FanCurve(points: points).percent(at: Double(temperature))
+        let percent = cruise ? (cruisePercent ?? 0) : curve.percent(at: Double(temperature))
         let center = plot.point(t: clamped, p: percent)
+        // A held speed only counts while it is above what the curve asks for here: once they meet, the descent is over.
+        let held = cruise ? nil : rampPercent.flatMap { $0 > percent ? $0 : nil }
+        descending = held != nil
+        for layer in rampLayers where layer.isHidden == descending {
+            layer.isHidden = !descending
+        }
+        pill.borderColor = descending ? rampTint : liveTint
 
         let path = CGMutablePath()
         path.move(to: CGPoint(x: center.x, y: bounds.minY))
@@ -105,17 +145,38 @@ final class CurveLiveMarker {
             transform: nil
         )
 
-        let speedLine = cruise && cruisePercent == nil ? "fans off" : speed.text(forCurvePercent: percent)
+        var anchor = center
+        var speedLine = cruise && cruisePercent == nil ? "fans off" : speed.text(forCurvePercent: percent)
+        if let held {
+            // The line starts at the cold end, where the curve alone would already have let the fans stop, and ends
+            // where the curve climbs back up to the held speed.
+            let meets = min(max(curve.temperature(reaching: held) ?? plot.tMax, plot.tMin), plot.tMax)
+            anchor = plot.point(t: clamped, p: held)
+            let floor = CGMutablePath()
+            floor.move(to: CGPoint(x: bounds.minX + CurveStyle.curveWidth / 2, y: anchor.y))
+            floor.addLine(to: CGPoint(x: plot.point(t: meets, p: held).x, y: anchor.y))
+            rampLine.path = floor
+            rampDot.path = CGPath(
+                ellipseIn: CGRect(
+                    x: anchor.x - CurveStyle.liveDotRadius,
+                    y: anchor.y - CurveStyle.liveDotRadius,
+                    width: CurveStyle.liveDotRadius * 2,
+                    height: CurveStyle.liveDotRadius * 2
+                ),
+                transform: nil
+            )
+            speedLine = speed.text(forCurvePercent: held) + " \u{2193}"
+        }
         let lines = [String(format: "%.1f\u{00B0}C", temperature), speedLine]
         let label = lines.joined(separator: "\n")
         let size = CurvePill.size(for: lines)
-        var x = center.x + CurveStyle.pillOffset
+        var x = anchor.x + CurveStyle.pillOffset
         if x + size.width > bounds.maxX {
-            x = center.x - CurveStyle.pillOffset - size.width
+            x = anchor.x - CurveStyle.pillOffset - size.width
         }
         pill.frame = CGRect(
             x: min(max(x, bounds.minX), bounds.maxX - size.width),
-            y: min(max(center.y + CurveStyle.pillOffset, bounds.minY), bounds.maxY - size.height),
+            y: min(max(anchor.y + CurveStyle.pillOffset, bounds.minY), bounds.maxY - size.height),
             width: size.width,
             height: size.height
         )

@@ -17,6 +17,8 @@ final class HelperClient {
 
     private var descriptor: Int32 = -1
     private var desiredPreset: Preset?
+    /// Sent with the preset on every resend, so a reconnect or the watchdog keeps the gradual cool-down.
+    private var desiredRampDown: Double?
     private var watchdog = ControlWatchdog()
     private var controlLostFlag = false
     private var backoffSeconds: UInt = 1
@@ -74,12 +76,13 @@ final class HelperClient {
         }
     }
 
-    func setCurve(_ preset: Preset) {
+    func setCurve(_ preset: Preset, rampDown: Double? = nil) {
         queue.async { [self] in
             desiredPreset = preset
+            desiredRampDown = rampDown
             resetWatchdog()
             guard openIfNeeded() else { return }
-            recordReply(transact(Self.command(for: preset)))
+            recordReply(transact(command(for: preset)))
         }
     }
 
@@ -124,7 +127,7 @@ final class HelperClient {
                                       now: Date().timeIntervalSinceReferenceDate)
         lock.lock(); controlLostFlag = watchdog.isLost; lock.unlock()
         if resend, let preset = desiredPreset {
-            recordReply(transact(Self.command(for: preset)))
+            recordReply(transact(command(for: preset)))
         }
     }
 
@@ -155,17 +158,17 @@ final class HelperClient {
         nextAttempt = .distantPast
         setConnected(true)
         if let preset = desiredPreset {
-            recordReply(transact(Self.command(for: preset)))
+            recordReply(transact(command(for: preset)))
         }
         return true
     }
 
-    /// A preset with a target holds that temperature; any other preset is a curve.
-    private static func command(for preset: Preset) -> String {
+    /// A preset with a target holds that temperature; any other preset is a curve. Runs on `queue`.
+    private func command(for preset: Preset) -> String {
         if let target = preset.target {
             return HelperCommand.hold(input: preset.input, target: target).serialized
         }
-        return HelperCommand.curve(input: preset.input, points: preset.points).serialized
+        return HelperCommand.curve(input: preset.input, points: preset.points, rampDown: desiredRampDown).serialized
     }
 
     private func scheduleBackoff() {

@@ -99,6 +99,21 @@ check.expectClose(silent.percent(at: 80), 35, tolerance: 0.0001, "interpolate se
 check.expectClose(silent.percent(at: 95), 100, tolerance: 0.0001, "last point exact")
 check.expectClose(silent.percent(at: 120), 100, tolerance: 0.0001, "clamp above last point")
 
+// MARK: - FanCurve.temperature(reaching:)
+
+check.expectClose(silent.temperature(reaching: 7.5) ?? -1, 60, tolerance: 0.0001, "a held speed meets the curve inside a segment")
+check.expectClose(silent.temperature(reaching: 15) ?? -1, 70, tolerance: 0.0001, "a speed at a vertex meets the curve at that vertex")
+check.expectClose(silent.temperature(reaching: 35) ?? -1, 80, tolerance: 0.0001, "the second segment is searched too")
+check.expectClose(silent.temperature(reaching: 100) ?? -1, 95, tolerance: 0.0001, "full speed is reached at the last point")
+check.expectClose(silent.temperature(reaching: 0) ?? -1, FanCurve.minTemperature, tolerance: 0.0001,
+                  "a speed the curve never goes below is reached from the coldest end")
+let capped = FanCurve(points: [CurvePoint(t: 40, p: 20), CurvePoint(t: 100, p: 80)])
+check.expectEqual(capped.temperature(reaching: 90), Double?.none, "a speed above the whole curve is never reached")
+for held in [3.0, 12.5, 40, 77, 99] {
+    let meets = silent.temperature(reaching: held) ?? -1
+    check.expectClose(silent.percent(at: meets), held, tolerance: 0.0001, "the curve asks for \(held) % exactly where it is reached")
+}
+
 // MARK: - PresetLibrary.defaults
 
 let defaults = PresetLibrary.defaults()
@@ -418,6 +433,17 @@ expectRoundTrip("CURVE decimals", "CURVE max 40:20.5,60.5:80.25",
                 serializedAs: "CURVE max 40:20.50,60.50:80.25")
 expectRoundTrip("CURVE lowercase verb", "curve max 30:0,90:100",
                 serializedAs: "CURVE max 30:0,90:100")
+expectRoundTrip("CURVE down", "CURVE max 30:0,90:100 down=1",
+                serializedAs: "CURVE max 30:0,90:100 down=1")
+expectRoundTrip("CURVE down decimal", "CURVE cpu 30:0,90:100 down=0.5",
+                serializedAs: "CURVE cpu 30:0,90:100 down=0.50")
+let rampPoints = [CurvePoint(t: 30, p: 0), CurvePoint(t: 90, p: 100)]
+let curveDown = check.expectNoThrow("CURVE down parses") { try HelperCommand.parse("CURVE max 30:0,90:100 down=2.5") }
+check.expectEqual(curveDown, HelperCommand.curve(input: .max, points: rampPoints, rampDown: 2.5), "down=2.5 parses to a 2.5 %/s limit")
+let curvePlain = check.expectNoThrow("CURVE without down parses") { try HelperCommand.parse("CURVE max 30:0,90:100") }
+check.expectEqual(curvePlain, HelperCommand.curve(input: .max, points: rampPoints, rampDown: nil), "a curve without down has no limit")
+check.expectEqual(HelperCommand.curve(input: .max, points: rampPoints).serialized, "CURVE max 30:0,90:100",
+                  "a curve without a limit is the three-token line an older helper accepts")
 expectRoundTrip("FIXED int", "FIXED 40", serializedAs: "FIXED 40")
 expectRoundTrip("FIXED decimal", "FIXED 62.5", serializedAs: "FIXED 62.50")
 expectRoundTrip("HOLD system", "HOLD system 45", serializedAs: "HOLD system 45")
@@ -456,6 +482,9 @@ expectProtoError("CURVE non-finite percent", .badValue("non-finite percent: nan"
 expectProtoError("CURVE bad number", .badValue("non-finite percent: abc"), "CURVE max 50:0,60:abc")
 expectProtoError("CURVE 13 points", .badValue(CurveError.tooManyPoints(13).description),
                  "CURVE max 0:0,5:5,10:10,15:15,20:20,25:25,30:30,35:35,40:40,45:45,50:50,55:55,60:60")
+for option in ["fast", "down=", "down=0", "down=-1", "down=500", "down=nan", "down=inf", "down=1 down=2"] {
+    check.expectThrows("CURVE \(option) is rejected") { _ = try HelperCommand.parse("CURVE max 50:0,60:10 \(option)") }
+}
 expectProtoError("FIXED no arg", .malformed("FIXED needs <percent>"), "FIXED")
 expectProtoError("FIXED too many args", .malformed("FIXED needs <percent>"), "FIXED 40 50")
 expectProtoError("FIXED over 100", .badValue("fixed percent outside 0...100: 101"), "FIXED 101")
@@ -496,6 +525,14 @@ let statusHold = HelperStatus(mode: .hold, inputTemperature: 45, targetRPM: [316
 check.expectEqual(statusHold.serialized, "OK mode=hold temp=45.0 rpm=3166.0,3168.0 writes=9", "status hold serialized")
 check.expectEqual(HelperStatus.parse(statusHold.serialized), statusHold, "status hold round trip")
 
+let statusRamp = HelperStatus(mode: .curve, inputTemperature: 48, targetRPM: [5000, 5000], writes: 21, rampPercent: 62.5)
+check.expectEqual(statusRamp.serialized, "OK mode=curve temp=48.0 rpm=5000.0,5000.0 writes=21 ramp=62.5", "status with a descent serialized")
+check.expectEqual(HelperStatus.parse(statusRamp.serialized), statusRamp, "status round trip with a descent")
+let statusRampError = HelperStatus(mode: .curve, inputTemperature: 48, targetRPM: [5000], writes: 2, error: "smc:0x82", rampPercent: 10)
+check.expectEqual(HelperStatus.parse(statusRampError.serialized), statusRampError, "status round trip with a descent and an error")
+check.expectEqual(HelperStatus.parse(statusCurve.serialized)?.rampPercent, Double?.none, "a status without the token reports no descent")
+check.expect(HelperStatus.parse("OK mode=curve temp=50 rpm=- writes=0 ramp=abc") == nil, "status parse rejects a non-numeric descent")
+check.expect(HelperStatus.parse("OK mode=curve temp=50 rpm=- writes=0 ramp=nan") == nil, "status parse rejects a non-finite descent")
 check.expect(HelperStatus.parse("") == nil, "status parse rejects empty")
 check.expect(HelperStatus.parse("garbage") == nil, "status parse rejects junk")
 check.expect(HelperStatus.parse("OK temp=50 rpm=- writes=0") == nil, "status parse rejects missing mode")
@@ -600,9 +637,11 @@ do {
     let rpm = FanSpeedFormat(fan: fan, showsRPM: true)
     check.expectEqual(percent.text(forCurvePercent: 0), "Auto", "a curve at 0 hands the fans back to macOS")
     check.expectEqual(rpm.text(forCurvePercent: -5), "Auto", "below 0 is still Auto")
-    check.expectEqual(percent.text(forCurvePercent: 3), "32%", "a curve value of 3 is 32 % of top speed: the fan's range starts at its minimum")
+    check.expectEqual(percent.text(forCurvePercent: 3), "3%", "a curve value of 3 reads 3 %: the percentage counts from the fan's slowest speed")
+    check.expectEqual(percent.text(forCurvePercent: 50), "50%", "halfway up the range reads 50 %")
     check.expectEqual(rpm.text(forCurvePercent: 3), "2482 rpm", "and the same value in rpm")
-    check.expectEqual(percent.text(forCurvePercent: 0.01), "30%", "the slowest speed the fan can run is 30 % of top speed")
+    check.expectEqual(percent.text(forCurvePercent: 0.01), "0%", "the slowest speed the fan can run reads 0 %")
+    check.expectEqual(rpm.text(forCurvePercent: 0.01), "2318 rpm", "and is still the fan's minimum in rpm")
     check.expectEqual(percent.text(forCurvePercent: 100), "100%", "a curve value of 100 is top speed")
     check.expectEqual(rpm.text(forCurvePercent: 100), "7826 rpm", "top speed in rpm")
     check.expectEqual(FanSpeedFormat(fan: nil, showsRPM: false).text(forCurvePercent: 50), "--", "without a fan there is nothing to convert")
@@ -622,11 +661,13 @@ do {
     store.setTemplate("CPU {cpu}")
     store.setShowPressureDot(false)
     store.setFanUnitsRPM(true)
+    store.setGradualCooldown(true)
     _ = check.expectNoThrow("settings save") { try store.save() }
     let reloaded = SettingsStore(url: url).load()
     check.expectEqual(reloaded.menuBarTemplate, "CPU {cpu}", "a saved template survives a reload")
     check.expectEqual(reloaded.showPressureDot, false, "a saved dot toggle survives a reload")
     check.expectEqual(reloaded.fanUnitsRPM, true, "a saved fan unit choice survives a reload")
+    check.expectEqual(reloaded.gradualCooldown, true, "a saved gradual cool-down survives a reload")
 
     try? Data("{ not json".utf8).write(to: url)
     check.expectEqual(SettingsStore(url: url).load(), AppSettings(), "a corrupt file loads the defaults")
@@ -636,6 +677,7 @@ do {
     try? Data(#"{"menuBarTemplate":"x"}"#.utf8).write(to: url)
     check.expectEqual(SettingsStore(url: url).load().showPressureDot, true, "a missing key takes its default")
     check.expectEqual(SettingsStore(url: url).load().fanUnitsRPM, false, "fan units default to percent")
+    check.expectEqual(SettingsStore(url: url).load().gradualCooldown, false, "gradual cool-down is off unless asked for")
 
     try? Data(#"{"menuBarTemplate":"   "}"#.utf8).write(to: url)
     check.expectEqual(SettingsStore(url: url).load().menuBarTemplate, "   ", "a blank template is kept as written")

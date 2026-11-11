@@ -395,4 +395,96 @@ do {
 
 runSystemInputWatchChecks(check)
 
+// 18. Gradual cool-down: an optional limit on how fast a curve lets the fans fall.
+do {
+    func all(_ percent: Double) -> [FanAction] {
+        fans.map { .setTarget(fan: $0.index, rpm: $0.rpm(percent: percent)) }
+    }
+    let top = steep.percent(at: 90)
+
+    // Without the option a drop is followed at once, as before.
+    let plain = FanController(fans: fans)
+    _ = check.expectNoThrow("curve without a limit accepted") { try plain.setCurve(steep, input: .max) }
+    plain.noteApplied(plain.tick(temperature: 90, fans: obs(manual: false)))
+    check.expectEqual(plain.tick(temperature: 50, fans: obs(manual: true), dt: 10), all(steep.percent(at: 50)),
+                      "no limit: a drop goes straight to the curve")
+    check.expectEqual(plain.rampingPercent, Double?.none, "no limit: no descent is reported")
+
+    // With it the fans fall by at most rate * dt per tick.
+    let c = FanController(fans: fans)
+    _ = check.expectNoThrow("curve with a limit accepted") { try c.setCurve(steep, input: .max, rampDown: 1) }
+    let first = c.tick(temperature: 90, fans: obs(manual: false))
+    check.expectEqual(first.first, .setTarget(fan: 0, rpm: fans[0].rpm(percent: top)), "the first tick takes the curve's value")
+    c.noteApplied(first)
+    let slow = c.tick(temperature: 50, fans: obs(manual: true), dt: 10)
+    check.expectEqual(slow, all(top - 10), "10 s at 1 %/s lower the fans by 10 %")
+    check.expectEqual(c.rampingPercent, Double?.some(top - 10), "a limited descent reports the speed it holds")
+    c.noteApplied(slow)
+    let slower = c.tick(temperature: 50, fans: obs(manual: true), dt: 5)
+    check.expectEqual(slower, all((top - 10) - 5), "the next 5 s lower them by 5 % more")
+    c.noteApplied(slower)
+
+    // A rise is never delayed.
+    let rise = c.tick(temperature: 93, fans: obs(manual: true), dt: 1)
+    check.expectEqual(rise, all(steep.percent(at: 93)), "a rise in the middle of a descent is followed at once")
+    check.expectEqual(c.rampingPercent, Double?.none, "back on the curve nothing is reported")
+    c.noteApplied(rise)
+
+    // A preset the user just picked starts at its own value.
+    _ = check.expectNoThrow("curve sent again") { try c.setCurve(steep, input: .max, rampDown: 1) }
+    check.expectEqual(c.tick(temperature: 50, fans: obs(manual: true), dt: 1), all(steep.percent(at: 50)),
+                      "a new curve command is not slowed")
+
+    // The last step of a descent is written although it sits inside the dead band.
+    let flat = FanCurve(points: [CurvePoint(t: 40, p: 20), CurvePoint(t: 100, p: 50)])
+    let s = FanController(fans: fans)
+    _ = check.expectNoThrow("flat curve accepted") { try s.setCurve(flat, input: .max, rampDown: 1) }
+    s.noteApplied(s.tick(temperature: 60, fans: obs(manual: false)))
+    check.expectEqual(s.tick(temperature: 57, fans: obs(manual: true), dt: 1), [], "a 1 % step stays inside the dead band")
+    let end = s.tick(temperature: 57, fans: obs(manual: true), dt: 1)
+    check.expectEqual(end, all(flat.percent(at: 57)), "reaching the curve writes its exact target")
+    check.expectEqual(s.rampingPercent, Double?.none, "a finished descent is no longer reported")
+    s.noteApplied(end)
+    check.expectEqual(s.tick(temperature: 57, fans: obs(manual: true), dt: 1), [], "a settled curve is quiet again")
+
+    // Panic is not slowed on the way up, and the way down afterwards starts from full speed.
+    let p = FanController(fans: fans)
+    _ = check.expectNoThrow("curve with a limit accepted") { try p.setCurve(steep, input: .max, rampDown: 1) }
+    p.noteApplied(p.tick(temperature: 96, fans: obs(manual: false)))
+    check.expectEqual(p.mode, .panic, "the limit does not stop the panic latch")
+    check.expectEqual(p.rampingPercent, Double?.none, "panic is not a descent")
+    let out = p.tick(temperature: 60, fans: obs(manual: true), dt: 10)
+    check.expectEqual(p.mode, .curve, "panic clears with the limit on")
+    check.expectEqual(out, all(90), "leaving panic comes down from full speed")
+    check.expectEqual(p.rampingPercent, Double?.some(90), "the way down from panic is reported")
+    p.noteApplied(out)
+    check.expectEqual(p.tick(temperature: 97, fans: obs(manual: true), dt: 1),
+                      fans.map { .setTarget(fan: $0.index, rpm: $0.maxRPM) }, "a descent never delays Mx")
+
+    // The zero-fan zone is reached at the end of the descent, not at its start.
+    let z = FanController(fans: fans)
+    _ = check.expectNoThrow("curve with a limit accepted") { try z.setCurve(steep, input: .max, rampDown: 1) }
+    z.noteApplied(z.tick(temperature: 46, fans: obs(manual: false)))
+    let half = z.tick(temperature: 30, fans: obs(manual: true), dt: 5)
+    check.expectEqual(half, all(steep.percent(at: 46) - 5), "the fans are not handed back while they still slow")
+    check.expectEqual(z.rampingPercent, Double?.some(steep.percent(at: 46) - 5), "a descent into the zero-fan zone is reported until it gets there")
+    z.noteApplied(half)
+    check.expectEqual(z.tick(temperature: 30, fans: obs(manual: true), dt: 10),
+                      fans.map { .setManual(fan: $0.index, on: false) }, "a descent that reaches 0 % hands the fans back to macOS")
+
+    // After a wake the fans start at the curve, not where they were before sleep.
+    let w = FanController(fans: fans)
+    _ = check.expectNoThrow("curve with a limit accepted") { try w.setCurve(steep, input: .max, rampDown: 1) }
+    w.noteApplied(w.tick(temperature: 90, fans: obs(manual: false)))
+    w.restartRamp()
+    check.expectEqual(w.tick(temperature: 50, fans: obs(manual: false), dt: 1).first,
+                      .setTarget(fan: 0, rpm: fans[0].rpm(percent: steep.percent(at: 50))), "restartRamp forgets the old speed")
+
+    let bad = FanController(fans: fans)
+    for rate in [0, -1, 500, Double.nan, Double.infinity] {
+        check.expectThrows("down rate \(rate) throws") { try bad.setCurve(steep, input: .max, rampDown: rate) }
+    }
+    check.expectEqual(bad.mode, .auto, "a rejected down rate leaves the mode untouched")
+}
+
 exit(check.summary())
