@@ -105,6 +105,9 @@ public final class PopoverViewController: NSViewController {
     let helpBubble = HelpBubbleView()
     private var snapshot: LiveSnapshot?
     private var visibility = (hasSystem: false, hasForceTest: false)
+    /// The preset row is filled by the first update, which knows the Mac's sensors: filling it while the view loads
+    /// built every chip twice on a Mac that has the system sensor.
+    private var presetRowLoaded = false
 
     /// The library as the preset row shows it: hold presets this Mac cannot run are left out, the stored file is not.
     private var visibleLibrary: PresetLibrary {
@@ -196,7 +199,6 @@ public final class PopoverViewController: NSViewController {
         ])
         view = root
 
-        slider.reload(library: visibleLibrary)
         editor.showActive()
         resize()
     }
@@ -226,7 +228,8 @@ public final class PopoverViewController: NSViewController {
         editor.setBatteryAvailable(snapshot.hasBattery)
         editor.setSystemAvailable(snapshot.hasSystem)
         editor.setGradualAvailable(!snapshot.helperOutdated)
-        if (snapshot.hasSystem, snapshot.hasForceTest) != (visibility.hasSystem, visibility.hasForceTest) {
+        if !presetRowLoaded || (snapshot.hasSystem, snapshot.hasForceTest) != (visibility.hasSystem, visibility.hasForceTest) {
+            presetRowLoaded = true
             visibility = (snapshot.hasSystem, snapshot.hasForceTest)
             slider.reload(library: visibleLibrary)
         }
