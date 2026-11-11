@@ -55,7 +55,7 @@ M5 Pro에서도 팬 제어가 가능하다. 이 맥에서 root 권한으로 직�
 - 서명: 모든 바이너리는 ad-hoc(`codesign -s -`)으로 서명한다. 서명이 없으면 이 맥에서 실행 즉시 SIGKILL로 종료된다 [A4].
 - IPC: 헬퍼가 `/var/run/com.stevenahhh.openfan.sock`을 만들고 권한을 0666으로 둔다. 대신 연결마다 `getpeereid`로 uid가 {0, 설치 사용자} 중 하나인지 확인하고, 그렇지 않으면 연결을 즉시 끊는다 [Source 32][Source 33][Source 46].
   - XPC 코드 서명 요구사항을 쓸 수도 있다. 하지만 ad-hoc 코드로는 빌드마다 바뀌는 cdhash나 위조할 수 있는 identifier만 지정할 수 있다 [Source 45][A2]. 자체 서명한 인증서로 안정적인 요구사항을 만들 수 있다는 것도 확인했다 [A4]. 다만 그러려면 키체인에 인증서를 따로 만들어야 한다. uid 검사는 서명 인프라 없이도 같은 수준의 경계를 제공한다. 같은 uid의 프로세스는 어차피 앱 자체를 조작할 수 있다. 게다가 헬퍼는 팬을 [Mn, Mx] 범위 밖으로 설정하지 않으므로, 오용되어도 최악의 경우 소음이 커지는 정도다.
-- 프로토콜: 한 줄에 명령 하나를 보내는 텍스트 방식이다. `PING`, `STATUS`, `AUTO`, `CURVE <max|cpu|gpu|battery> t:p,…`, `FIXED <percent>`. `battery`는 TB0T/TB1T/TB2T 중 유효한 센서의 평균이다. NaN이나 범위 밖 숫자는 거부한다. 점은 2~12개여야 하고(ASSUMED: 편집기 조작성을 기준으로 함), 온도는 순증가(strictly increasing)해야 한다.
+- 프로토콜: 한 줄에 명령 하나를 보내는 텍스트 방식이다. `PING`, `STATUS`, `AUTO`, `CURVE <max|cpu|gpu|battery> t:p,… [down=<%/s>]`, `FIXED <percent>`. `battery`는 TB0T/TB1T/TB2T 중 유효한 센서의 평균이다. `down`은 선택 토큰이고 커브가 팬을 내리는 속도를 초당 퍼센트(0.1~100)로 제한한다. 토큰이 없으면 이전과 똑같이 동작한다. 하강을 제한하는 동안 `STATUS` 응답은 `writes=` 뒤에 `ramp=<퍼센트>`를 붙여 팬이 지금 묶여 있는 속도를 알린다. 앱은 이 값으로 그래프에 빨간 하강선을 그린다. NaN이나 범위 밖 숫자는 거부한다. 점은 2~12개여야 하고(ASSUMED: 편집기 조작성을 기준으로 함), 온도는 순증가(strictly increasing)해야 한다.
 
 ## 4. 제어 루프와 안전장치
 
@@ -66,6 +66,7 @@ M5 Pro에서도 팬 제어가 가능하다. 이 맥에서 root 권한으로 직�
 | 입력 | 프리셋마다 `cpu`/`gpu`/`max`/`battery` 중 하나를 고르며, 기본값은 `max`다 | [A5] 클래스별 최댓값 |
 | 히스테리시스(하강) | 2°C | fand의 하강 폭은 3.0°C, fanpro는 2°C [Source 7][A5] |
 | 쓰기 dead band | 목표 RPM이 100rpm 이상 바뀔 때만 `Tg`를 쓴다 | fanctl 150rpm [Source 8], 쓰기 한도 [Source 12] |
+| 하강 속도 제한(선택) | 커브 프리셋 그래프 아래의 "Slow down gradually"를 켜면 커브 출력이 초당 1% 이하로만 내려간다. 상승, 과열, 새 `CURVE` 명령은 제한 없이 바로 적용한다. 기본값은 꺼짐이다 | 1%/s는 ASSUMED. hold 루프의 `rateDown`과 같은 방식이다 |
 | 과열 | 커브 입력과 상관없이 CPU/GPU 중 가장 뜨거운 값이 95°C 이상이면 팬을 Mx로 설정하고, 88°C 미만으로 내려오면 해제한다 | fand >95°C [Source 7], fanctl ≥95°C [Source 8] |
 | 회수 대응 | 틱마다 `F{n}md`를 읽어 1이 아니면 `Tg`를 먼저 쓰고 `md=1`을 다시 쓴다 | [Source 17][Source 56] |
 | 리스 | 앱은 소켓 연결을 유지하고 커브를 적용하는 동안 틱마다(팝오버가 닫혀 있으면 3초, 열려 있으면 1초) PING을 보낸다. 연결이 끊기거나 12초 동안 신호가 없으면 auto로 전환한다 | fanfan 10초 리스 [Source 35], 9fan 6초 [Source 32] |

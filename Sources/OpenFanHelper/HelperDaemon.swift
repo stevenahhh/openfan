@@ -78,7 +78,7 @@ final class HelperDaemon {
     private var systemInputWatch = SystemInputWatch()
     /// True while a hold is paused because TVS0 stopped moving; STATUS reports it so the app can say why.
     private var holdPaused = false
-    /// Monotonic timestamp of the previous hold tick; nil starts a new hold session at dt 1.0.
+    /// Monotonic timestamp of the previous hold or curve tick; nil makes the next tick use dt 1.0.
     private var lastControlTick: UInt64?
     /// Last hold state written to the log, and when; a hold logs its transitions and one summary a minute.
     private var loggedHold: HoldState?
@@ -178,15 +178,17 @@ final class HelperDaemon {
                 failToMonitor(reason: "smc:release", detail: "AUTO could not release every fan")
                 connection.send("ERR release failed")
             }
-        case .curve(let input, let points):
+        case .curve(let input, let points, let rampDown):
             guard !monitorOnly else { connection.send("ERR monitor"); return }
             do {
-                try controller.setCurve(FanCurve(points: points), input: input)
+                try controller.setCurve(FanCurve(points: points), input: input, rampDown: rampDown)
             } catch {
                 connection.send("ERR \(error)")
                 return
             }
-            logLine("command CURVE \(input.rawValue) (\(points.count) points) from connection \(connection.id)")
+            logLine("command CURVE \(input.rawValue) (\(points.count) points"
+                    + (rampDown.map { ", down \(HelperCommand.number($0)) %/s" } ?? "")
+                    + ") from connection \(connection.id)")
             beginControl(connection, input: input)
             connection.send("OK")
         case .fixed(let percent):
@@ -281,7 +283,8 @@ final class HelperDaemon {
 
         let now = nowNanos()
         var dt: Double?
-        if controller.mode == .hold {
+        // A curve's down limit needs real elapsed time as much as a hold does: a command ticks at once, off the timer.
+        if controller.mode == .hold || controller.mode == .curve || controller.mode == .panic {
             if let last = lastControlTick {
                 dt = Double(now &- last) / 1_000_000_000
             }
@@ -533,7 +536,8 @@ final class HelperDaemon {
             inputTemperature: active ? lastTemperature : nil,
             targetRPM: active && targets.count == fans.count ? targets : [],
             writes: controller.writes,
-            error: mode == .hold && holdPaused ? HelperStatus.holdPausedReason : controller.lastError
+            error: mode == .hold && holdPaused ? HelperStatus.holdPausedReason : controller.lastError,
+            rampPercent: mode == .curve ? controller.rampingPercent.map { ($0 * 100).rounded() / 100 } : nil
         )
     }
 
@@ -602,6 +606,7 @@ final class HelperDaemon {
             if asleep {
                 asleep = false
                 controller.restartHold()
+                controller.restartRamp()
                 lastControlTick = nil
                 logLine("wake: the next tick re-applies control")
             }
