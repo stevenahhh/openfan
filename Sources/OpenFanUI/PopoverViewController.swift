@@ -232,7 +232,8 @@ public final class PopoverViewController: NSViewController {
 
         let temperature = editor.activeInput.flatMap { snapshot.reading?.input($0) }
         editor.updateLive(temperature: temperature, speed: FanSpeedFormat(fan: snapshot.fans.first, showsRPM: header.showsRPM),
-                          fanPercent: Self.fanPercent(snapshot))
+                          fanPercent: Self.fanPercent(snapshot),
+                          rampPercent: snapshot.helperStatus?.mode == .curve ? snapshot.helperStatus?.rampPercent : nil)
     }
 
     private func resize() {
@@ -267,6 +268,7 @@ public final class PopoverViewController: NSViewController {
         editor.showActive()
         slider.reload(library: visibleLibrary)
         actions.presetsChanged()
+        forgetDescent()
         refreshHeader()
         resize()
     }
@@ -275,7 +277,14 @@ public final class PopoverViewController: NSViewController {
         slider.reload(library: visibleLibrary)
         resize()
         actions.presetsChanged()
+        forgetDescent()
         refreshHeader()
+    }
+
+    /// A curve that was just sent starts at its own value, so the descent the last status reported belongs to the
+    /// curve before it and must not be drawn on this one until the helper reports again.
+    private func forgetDescent() {
+        snapshot?.helperStatus?.rampPercent = nil
     }
 
     private func buildMenu() -> NSMenu {

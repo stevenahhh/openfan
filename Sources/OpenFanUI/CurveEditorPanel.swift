@@ -98,8 +98,10 @@ final class CurveEditorPanel: NSView {
         + "of their range per second instead of dropping at once. Applies to every curve preset."
 
     /// `fanPercent` is the fans' real speed (nil while stopped); a cruise preset draws it instead of a curve value.
-    func updateLive(temperature: Float?, speed: FanSpeedFormat, fanPercent: Double? = nil) {
+    /// `rampPercent` is the speed a gradual cool-down still holds the fans at; only a curve preset draws it.
+    func updateLive(temperature: Float?, speed: FanSpeedFormat, fanPercent: Double? = nil, rampPercent: Double? = nil) {
         graph.setCruisePercent(fanPercent)
+        graph.setRamp(draft?.isHold == false ? rampPercent : nil)
         graph.setLive(temperature: temperature, speed: speed)
     }
 

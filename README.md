@@ -93,6 +93,10 @@ Under the graph of a curve preset there is a **Slow down gradually** box. With i
 about 1 % of their range per second instead of following the temperature down at once, so a burst fades out over a
 minute or so. A rise, the 95 °C full-speed rule and a preset you pick still apply immediately. It is off by default,
 applies to every curve preset at once and does not change Cruise presets, which is why it is not shown there.
+While the fans fade out, the graph draws the speed they still hold as a red line, from the cold end of the graph to
+where the curve climbs back up to it, with a red dot and a readout at the current temperature. The line sinks until
+it meets the curve; below the curve's bottom edge that means all the way down to the point where the fans go back to
+macOS.
 
 Your presets live in `~/Library/Application Support/OpenFan/presets.json` and the settings in `settings.json` next to
 it. An unreadable settings file is kept as `settings.json.bak` and the defaults are used.

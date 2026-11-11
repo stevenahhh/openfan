@@ -71,6 +71,22 @@ public struct FanCurve: Codable, Equatable, Sendable {
         }
     }
 
+    /// The lowest temperature at which the curve asks for at least `percent`: where a speed held above the curve
+    /// meets it again. Nil when the curve never gets that high.
+    public func temperature(reaching percent: Double) -> Double? {
+        guard let first = points.first else { return nil }
+        if first.p >= percent { return FanCurve.minTemperature }
+        for index in 0..<(points.count - 1) {
+            let lower = points[index]
+            let upper = points[index + 1]
+            guard upper.p >= percent else { continue }
+            let rise = upper.p - lower.p
+            if rise <= 0 { return upper.t }
+            return lower.t + (percent - lower.p) / rise * (upper.t - lower.t)
+        }
+        return nil
+    }
+
     /// Piecewise-linear lookup: clamps below the first and above the last point, interpolates between
     /// neighbouring points otherwise.
     public func percent(at temperature: Double) -> Double {
