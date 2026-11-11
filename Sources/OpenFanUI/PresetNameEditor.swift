@@ -23,10 +23,13 @@ final class PresetNameEditor: NSView, NSTextFieldDelegate {
         label.font = .systemFont(ofSize: 13, weight: .semibold)
         label.lineBreakMode = .byTruncatingTail
         label.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        // Spare width goes to the field while renaming and to empty space otherwise, never to the label or a button:
+        // with equal priorities Auto Layout picked one at random and the row jumped between openings.
+        label.setContentHuggingPriority(.defaultHigh, for: .horizontal)
 
         field.placeholderString = "Preset name"
         field.delegate = self
-        field.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        field.setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .horizontal)
         field.setAccessibilityLabel("Preset name")
 
         renameButton.toolTip = "Name this preset"
@@ -34,6 +37,7 @@ final class PresetNameEditor: NSView, NSTextFieldDelegate {
             button.controlSize = .small
             button.bezelStyle = .rounded
             button.target = self
+            button.setContentHuggingPriority(.defaultHigh, for: .horizontal)
         }
         renameButton.action = #selector(renameTapped(_:))
         saveButton.action = #selector(saveTapped(_:))
@@ -50,6 +54,9 @@ final class PresetNameEditor: NSView, NSTextFieldDelegate {
             row.bottomAnchor.constraint(equalTo: bottomAnchor),
             row.leadingAnchor.constraint(equalTo: leadingAnchor),
             row.trailingAnchor.constraint(equalTo: trailingAnchor),
+            // The field is the tallest thing this row ever shows, so the row is that tall from the start and
+            // Rename, Save and Cancel move nothing around it.
+            heightAnchor.constraint(equalToConstant: ceil(field.fittingSize.height)),
         ])
         render()
     }

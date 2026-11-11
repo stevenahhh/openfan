@@ -110,6 +110,22 @@ final class CurveEditorPanel: NSView {
         input == .system ? 30...60 : 50...110
     }
 
+    /// The height of the longest note the editor can show, so the note's box is that tall for every preset.
+    private static func tallestNote(width: CGFloat, font: NSFont) -> CGFloat {
+        var samples = PresetLibrary.builtIns.filter { !$0.isFullSpeed }
+        for input in FanControlInput.allCases {
+            samples.append(Preset(id: PresetLibrary.quietHoldID, name: "", input: input, points: [], target: 45))
+            samples.append(Preset(id: "", name: "", input: input, points: [], target: 45))
+        }
+        let probe = NSTextField(wrappingLabelWithString: "")
+        probe.font = font
+        let limit = NSSize(width: width, height: .greatestFiniteMagnitude)
+        return samples.reduce(0) { tallest, preset in
+            probe.stringValue = cruiseNote(for: preset)
+            return max(tallest, ceil(probe.sizeThatFits(limit).height))
+        }
+    }
+
     private static func cruiseNote(for preset: Preset) -> String {
         guard preset.target != nil else { return preset.editorNote }
         let note = "Cruise holds \(holdSourceName(for: preset.input)) at the target as quietly as it can and gives the fans "
@@ -198,6 +214,8 @@ final class CurveEditorPanel: NSView {
         nameRow.orientation = .horizontal
         nameRow.spacing = 8
         nameRow.alignment = .centerY
+        // The name takes the spare width, which keeps the input at the trailing edge on every opening.
+        nameRow.distribution = .fill
 
         let spacer = NSView()
         spacer.setContentHuggingPriority(NSLayoutConstraint.Priority(rawValue: 1), for: .horizontal)
@@ -228,9 +246,18 @@ final class CurveEditorPanel: NSView {
         stack.orientation = .vertical
         stack.alignment = .leading
         stack.spacing = 8
+        // A hidden row keeps its place and every row has one height, so the panel is the same size for every preset
+        // and a click never moves what sits below it.
+        stack.detachesHiddenViews = false
         for row in rows {
             row.widthAnchor.constraint(equalToConstant: width).isActive = true
         }
+        NSLayoutConstraint.activate([
+            nameRow.heightAnchor.constraint(equalToConstant: ceil(max(nameEditor.fittingSize.height, inputPopup.fittingSize.height))),
+            buttonRow.heightAnchor.constraint(equalToConstant: ceil(max(duplicateButton.fittingSize.height, gradualToggle.fittingSize.height))),
+            noteLabel.heightAnchor.constraint(equalToConstant: Self.tallestNote(width: width, font: noteLabel.font ?? .systemFont(ofSize: 10))),
+            errorLabel.heightAnchor.constraint(equalToConstant: ceil(errorLabel.fittingSize.height)),
+        ])
 
         stack.translatesAutoresizingMaskIntoConstraints = false
         addSubview(stack)
