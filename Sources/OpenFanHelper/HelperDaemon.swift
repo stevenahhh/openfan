@@ -178,16 +178,17 @@ final class HelperDaemon {
                 failToMonitor(reason: "smc:release", detail: "AUTO could not release every fan")
                 connection.send("ERR release failed")
             }
-        case .curve(let input, let points, let rampDown):
+        case .curve(let input, let points, let rampDown, let panic):
             guard !monitorOnly else { connection.send("ERR monitor"); return }
             do {
-                try controller.setCurve(FanCurve(points: points), input: input, rampDown: rampDown)
+                try controller.setCurve(FanCurve(points: points), input: input, rampDown: rampDown, panic: panic)
             } catch {
                 connection.send("ERR \(error)")
                 return
             }
             logLine("command CURVE \(input.rawValue) (\(points.count) points"
                     + (rampDown.map { ", down \(HelperCommand.number($0)) %/s" } ?? "")
+                    + (panic ? "" : ", 95 C latch off")
                     + ") from connection \(connection.id)")
             beginControl(connection, input: input)
             connection.send("OK")

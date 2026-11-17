@@ -47,6 +47,8 @@ public final class FanController {
     private var fixedPercent: Double?
     private var holdLoop: HoldLoop?
     private var panicked = false
+    /// False when the user turned the 95 °C latch off for this curve.
+    private var panicGuard = true
     private var usedTemperature: Float?
     private var lastTargets: [Float?]
     /// Fastest a curve may bring the fans down, percent per second; nil follows the curve down at once.
@@ -86,7 +88,7 @@ public final class FanController {
 
     /// A new curve always starts at its own value: the down limit smooths a Mac cooling off, not a preset the user
     /// just picked.
-    public func setCurve(_ curve: FanCurve, input: FanControlInput, rampDown: Double? = nil) throws {
+    public func setCurve(_ curve: FanCurve, input: FanControlInput, rampDown: Double? = nil, panic: Bool = true) throws {
         try curve.validate()
         if let rampDown {
             let range = HelperCommand.rampDownRange
@@ -95,6 +97,7 @@ public final class FanController {
             }
         }
         self.rampDown = rampDown
+        self.panicGuard = panic
         self.rampPercent = nil
         self.ramping = false
         self.curve = curve
@@ -112,6 +115,7 @@ public final class FanController {
             throw ProtocolError.badValue("fixed percent must be finite and within 0...100")
         }
         self.fixedPercent = percent
+        self.panicGuard = true
         self.curve = nil
         self.input = nil
         self.holdLoop = nil
@@ -227,7 +231,7 @@ public final class FanController {
         let wasPanicked = panicked
         if panicked {
             if hottest < config.panicOff { panicked = false }
-        } else if hottest >= config.panicOn {
+        } else if panicGuard && hottest >= config.panicOn {
             panicked = true
         }
         let enteringPanic = panicked && !wasPanicked
@@ -315,6 +319,7 @@ public final class FanController {
         fixedPercent = nil
         holdLoop = nil
         panicked = false
+        panicGuard = true
         usedTemperature = nil
         lastTargets = Array(repeating: nil, count: fans.count)
         rampDown = nil

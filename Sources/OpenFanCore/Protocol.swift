@@ -32,7 +32,8 @@ public enum HelperPaths {
 
 /// One line-protocol command, newline terminated over the Unix socket.
 ///
-/// PING | STATUS | AUTO | CURVE <max|cpu|gpu|battery> <t:p,t:p,...> [down=<percent per second>] | FIXED <percent> |
+/// PING | STATUS | AUTO | CURVE <max|cpu|gpu|battery> <t:p,t:p,...> [down=<percent per second>] [panic=off] |
+/// FIXED <percent> |
 /// HOLD <max|cpu|gpu|system> <targetC>
 public enum HelperCommand: Equatable, Sendable {
     case ping
@@ -40,7 +41,8 @@ public enum HelperCommand: Equatable, Sendable {
     case auto
     /// `rampDown` limits how fast the fans slow as the Mac cools; nil is sent as the old three-token line, so a
     /// helper from before the option still understands it.
-    case curve(input: FanControlInput, points: [CurvePoint], rampDown: Double? = nil)
+    /// `panic` false turns off the 95 °C full-speed latch; true is sent without the token, for the same reason.
+    case curve(input: FanControlInput, points: [CurvePoint], rampDown: Double? = nil, panic: Bool = true)
     case fixed(percent: Double)
     case hold(input: FanControlInput, target: Double)
 
@@ -76,16 +78,23 @@ public enum HelperCommand: Equatable, Sendable {
             guard parts.count == 1 else { throw ProtocolError.malformed("AUTO takes no arguments") }
             return .auto
         case "CURVE":
-            guard parts.count == 3 || parts.count == 4 else { throw ProtocolError.malformed("CURVE needs <input> <points>") }
+            guard (3...5).contains(parts.count) else { throw ProtocolError.malformed("CURVE needs <input> <points>") }
             guard let input = FanControlInput(rawValue: parts[1]) else {
                 throw ProtocolError.badValue("unknown curve input \(parts[1])")
             }
             var rampDown: Double?
-            if parts.count == 4 {
-                guard parts[3].hasPrefix("down=") else {
-                    throw ProtocolError.malformed("CURVE option is not down=<rate>: \(parts[3])")
+            var panic = true
+            var options = parts.dropFirst(3)
+            if options.last == "panic=off" {
+                panic = false
+                options = options.dropLast()
+            }
+            guard options.count <= 1 else { throw ProtocolError.malformed("CURVE has too many options") }
+            if let option = options.first {
+                guard option.hasPrefix("down=") else {
+                    throw ProtocolError.malformed("CURVE option is not down=<rate> or panic=off: \(option)")
                 }
-                let text = String(parts[3].dropFirst(5))
+                let text = String(option.dropFirst(5))
                 guard let rate = Double(text), rate.isFinite else {
                     throw ProtocolError.badValue("curve down rate is not a finite number: \(text)")
                 }
@@ -100,7 +109,7 @@ public enum HelperCommand: Equatable, Sendable {
             } catch let error as CurveError {
                 throw ProtocolError.badValue(error.description)
             }
-            return .curve(input: input, points: points, rampDown: rampDown)
+            return .curve(input: input, points: points, rampDown: rampDown, panic: panic)
         case "FIXED":
             guard parts.count == 2 else { throw ProtocolError.malformed("FIXED needs <percent>") }
             guard let percent = Double(parts[1]), percent.isFinite else {
@@ -157,9 +166,10 @@ public enum HelperCommand: Equatable, Sendable {
         case .ping: return "PING"
         case .status: return "STATUS"
         case .auto: return "AUTO"
-        case .curve(let input, let points, let rampDown):
+        case .curve(let input, let points, let rampDown, let panic):
             let list = points.map { "\(Self.number($0.t)):\(Self.number($0.p))" }.joined(separator: ",")
             return "CURVE \(input.rawValue) \(list)" + (rampDown.map { " down=\(Self.number($0))" } ?? "")
+                + (panic ? "" : " panic=off")
         case .fixed(let percent):
             return "FIXED \(Self.number(percent))"
         case .hold(let input, let target):

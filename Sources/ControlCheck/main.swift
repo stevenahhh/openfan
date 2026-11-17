@@ -205,6 +205,20 @@ do {
     }
 }
 
+// 12b. A curve sent with the latch off keeps following itself above 95; a new curve without the option restores it.
+do {
+    let c = FanController(fans: fans)
+    _ = check.expectNoThrow("curve without latch accepted") { try c.setCurve(steep, input: .cpu, panic: false) }
+    let a = c.tick(temperature: 60, safetyTemperature: 99, fans: obs(manual: false))
+    check.expectEqual(c.mode, .curve, "latch off: a hot SoC does not panic")
+    for (i, fan) in fans.enumerated() {
+        check.expectEqual(a[i * 2], .setTarget(fan: fan.index, rpm: fan.rpm(percent: steep.percent(at: 60))), "latch off: fan \(fan.index) follows the curve")
+    }
+    _ = check.expectNoThrow("curve with latch accepted") { try c.setCurve(steep, input: .cpu) }
+    _ = c.tick(temperature: 60, safetyTemperature: 99, fans: obs(manual: false))
+    check.expectEqual(c.mode, .panic, "latch back on: a hot SoC panics")
+}
+
 // 13. A SoC reading below the panic threshold, nil, or invalid never changes what the curve does.
 do {
     for (label, safety) in [("warm", Float(94)), ("nil", nil), ("NaN", Float.nan), ("infinite", Float.infinity), ("above ceiling", Float(500)), ("negative", Float(-5))] as [(String, Float?)] {
