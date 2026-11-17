@@ -444,6 +444,13 @@ let curvePlain = check.expectNoThrow("CURVE without down parses") { try HelperCo
 check.expectEqual(curvePlain, HelperCommand.curve(input: .max, points: rampPoints, rampDown: nil), "a curve without down has no limit")
 check.expectEqual(HelperCommand.curve(input: .max, points: rampPoints).serialized, "CURVE max 30:0,90:100",
                   "a curve without a limit is the three-token line an older helper accepts")
+expectRoundTrip("CURVE panic off", "CURVE max 30:0,90:100 panic=off",
+                serializedAs: "CURVE max 30:0,90:100 panic=off")
+expectRoundTrip("CURVE down and panic off", "CURVE cpu 30:0,90:100 down=1 panic=off",
+                serializedAs: "CURVE cpu 30:0,90:100 down=1 panic=off")
+check.expectEqual(try? HelperCommand.parse("CURVE max 30:0,90:100 panic=off"),
+                  HelperCommand.curve(input: .max, points: rampPoints, panic: false), "panic=off turns the latch off")
+check.expectEqual(curvePlain, HelperCommand.curve(input: .max, points: rampPoints, panic: true), "a curve keeps the latch by default")
 expectRoundTrip("FIXED int", "FIXED 40", serializedAs: "FIXED 40")
 expectRoundTrip("FIXED decimal", "FIXED 62.5", serializedAs: "FIXED 62.50")
 expectRoundTrip("HOLD system", "HOLD system 45", serializedAs: "HOLD system 45")
@@ -482,7 +489,8 @@ expectProtoError("CURVE non-finite percent", .badValue("non-finite percent: nan"
 expectProtoError("CURVE bad number", .badValue("non-finite percent: abc"), "CURVE max 50:0,60:abc")
 expectProtoError("CURVE 13 points", .badValue(CurveError.tooManyPoints(13).description),
                  "CURVE max 0:0,5:5,10:10,15:15,20:20,25:25,30:30,35:35,40:40,45:45,50:50,55:55,60:60")
-for option in ["fast", "down=", "down=0", "down=-1", "down=500", "down=nan", "down=inf", "down=1 down=2"] {
+for option in ["fast", "down=", "down=0", "down=-1", "down=500", "down=nan", "down=inf", "down=1 down=2",
+               "panic=on", "panic=off down=1", "panic=off panic=off"] {
     check.expectThrows("CURVE \(option) is rejected") { _ = try HelperCommand.parse("CURVE max 50:0,60:10 \(option)") }
 }
 expectProtoError("FIXED no arg", .malformed("FIXED needs <percent>"), "FIXED")
@@ -662,12 +670,14 @@ do {
     store.setShowPressureDot(false)
     store.setFanUnitsRPM(true)
     store.setGradualCooldown(true)
+    store.setPanicFullSpeed(false)
     _ = check.expectNoThrow("settings save") { try store.save() }
     let reloaded = SettingsStore(url: url).load()
     check.expectEqual(reloaded.menuBarTemplate, "CPU {cpu}", "a saved template survives a reload")
     check.expectEqual(reloaded.showPressureDot, false, "a saved dot toggle survives a reload")
     check.expectEqual(reloaded.fanUnitsRPM, true, "a saved fan unit choice survives a reload")
     check.expectEqual(reloaded.gradualCooldown, true, "a saved gradual cool-down survives a reload")
+    check.expectEqual(reloaded.panicFullSpeed, false, "a saved 95 C toggle survives a reload")
 
     try? Data("{ not json".utf8).write(to: url)
     check.expectEqual(SettingsStore(url: url).load(), AppSettings(), "a corrupt file loads the defaults")
@@ -678,6 +688,7 @@ do {
     check.expectEqual(SettingsStore(url: url).load().showPressureDot, true, "a missing key takes its default")
     check.expectEqual(SettingsStore(url: url).load().fanUnitsRPM, false, "fan units default to percent")
     check.expectEqual(SettingsStore(url: url).load().gradualCooldown, false, "gradual cool-down is off unless asked for")
+    check.expectEqual(SettingsStore(url: url).load().panicFullSpeed, true, "the 95 C rule is on unless turned off")
 
     try? Data(#"{"menuBarTemplate":"   "}"#.utf8).write(to: url)
     check.expectEqual(SettingsStore(url: url).load().menuBarTemplate, "   ", "a blank template is kept as written")

@@ -19,6 +19,7 @@ final class HelperClient {
     private var desiredPreset: Preset?
     /// Sent with the preset on every resend, so a reconnect or the watchdog keeps the gradual cool-down.
     private var desiredRampDown: Double?
+    private var desiredPanic = true
     private var watchdog = ControlWatchdog()
     private var controlLostFlag = false
     private var backoffSeconds: UInt = 1
@@ -76,10 +77,11 @@ final class HelperClient {
         }
     }
 
-    func setCurve(_ preset: Preset, rampDown: Double? = nil) {
+    func setCurve(_ preset: Preset, rampDown: Double? = nil, panic: Bool = true) {
         queue.async { [self] in
             desiredPreset = preset
             desiredRampDown = rampDown
+            desiredPanic = panic
             resetWatchdog()
             guard openIfNeeded() else { return }
             recordReply(transact(command(for: preset)))
@@ -168,7 +170,8 @@ final class HelperClient {
         if let target = preset.target {
             return HelperCommand.hold(input: preset.input, target: target).serialized
         }
-        return HelperCommand.curve(input: preset.input, points: preset.points, rampDown: desiredRampDown).serialized
+        return HelperCommand.curve(input: preset.input, points: preset.points, rampDown: desiredRampDown,
+                                   panic: desiredPanic).serialized
     }
 
     private func scheduleBackoff() {

@@ -15,23 +15,27 @@ public struct AppSettings: Codable, Equatable, Sendable {
     public var fanUnitsRPM: Bool
     /// Curves slow the fans gradually as the Mac cools; false follows the curve down at once, as before the option.
     public var gradualCooldown: Bool
+    /// Curves run the fans at full speed once the CPU or GPU reaches 95 °C; false leaves the curve in charge.
+    public var panicFullSpeed: Bool
 
     public init(
         version: Int = AppSettings.currentVersion,
         menuBarTemplate: String = AppSettings.defaultTemplate,
         showPressureDot: Bool = true,
         fanUnitsRPM: Bool = false,
-        gradualCooldown: Bool = false
+        gradualCooldown: Bool = false,
+        panicFullSpeed: Bool = true
     ) {
         self.version = version
         self.menuBarTemplate = menuBarTemplate
         self.showPressureDot = showPressureDot
         self.fanUnitsRPM = fanUnitsRPM
         self.gradualCooldown = gradualCooldown
+        self.panicFullSpeed = panicFullSpeed
     }
 
     private enum CodingKeys: String, CodingKey {
-        case version, menuBarTemplate, showPressureDot, fanUnitsRPM, gradualCooldown
+        case version, menuBarTemplate, showPressureDot, fanUnitsRPM, gradualCooldown, panicFullSpeed
     }
 
     public init(from decoder: Decoder) throws {
@@ -41,6 +45,7 @@ public struct AppSettings: Codable, Equatable, Sendable {
         showPressureDot = try container.decodeIfPresent(Bool.self, forKey: .showPressureDot) ?? true
         fanUnitsRPM = try container.decodeIfPresent(Bool.self, forKey: .fanUnitsRPM) ?? false
         gradualCooldown = try container.decodeIfPresent(Bool.self, forKey: .gradualCooldown) ?? false
+        panicFullSpeed = try container.decodeIfPresent(Bool.self, forKey: .panicFullSpeed) ?? true
     }
 
     static func clamped(_ template: String) -> String {
@@ -100,6 +105,10 @@ public final class SettingsStore {
 
     public func setGradualCooldown(_ gradual: Bool) {
         settings.gradualCooldown = gradual
+    }
+
+    public func setPanicFullSpeed(_ on: Bool) {
+        settings.panicFullSpeed = on
     }
 
     public func save() throws {

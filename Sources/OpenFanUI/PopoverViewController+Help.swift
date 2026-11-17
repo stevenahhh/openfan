@@ -14,12 +14,12 @@ extension PopoverViewController {
 
     func helpText() -> String {
         if showingSettings {
-            return "The menu bar text is rebuilt from this template. Click a name to insert it; anything else is shown as typed. Leave the field empty to show only the pressure dot."
+            return "The menu bar text is rebuilt from this template. Click a name to insert it; anything else is shown as typed. Leave the field empty to show only the pressure dot. Full speed at 95 \u{00B0}C turns the overheat rule for curve presets on or off."
         }
         return """
             Drag a point to move it. Double-click empty space to add a point. Right-click a point to remove it.
             Built-in presets cannot be changed: duplicate one to make it yours.
-            With CPU or GPU as the input, 95 \u{00B0}C or above still forces full speed.
+            Whatever the input, 95 \u{00B0}C or above on the CPU or GPU forces full speed unless Settings turns that off.
             Where a curve reaches the bottom, the fans go back to macOS (shown as Auto), which stops them on a cool Mac.
             Slow down gradually lets the fans fade out as the Mac cools instead of dropping at once. It applies to every curve.
             While they fade, a red line shows the speed the fans still hold; it sinks until it meets the curve.

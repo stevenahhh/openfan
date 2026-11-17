@@ -70,11 +70,12 @@ The menu bar shows `52° 2.3k` by default. Clicking it opens the popover:
   Every edit is saved when you let go of the mouse and applied right away. The pop-up menu next to the name picks
   what the curve follows: the hottest of CPU and GPU, the CPU, the GPU or the battery average. A curve that reaches
   its bottom edge hands the fans back to macOS (the graph says Auto there), which lets them stop while the Mac is
-  cool. Whatever a curve follows, the fans go to full speed when the CPU or GPU reaches 95 °C.
+  cool. Whatever a curve follows, the fans go to full speed when the CPU or GPU reaches 95 °C, unless
+  **Full speed at 95 °C** is turned off in Settings.
 - **Footer**: hovering **?** explains the editor, a dot shows memory pressure the way Activity Monitor colours it,
-  and the **☰** menu holds Menu Bar Text…, the helper and Quit.
+  and the **☰** menu holds Settings…, the helper and Quit.
 
-**Menu Bar Text…** opens the settings page. The text is a template; click a name to insert it, and the preview shows
+**Settings…** opens the settings page. The menu bar text is a template; click a name to insert it, and the preview shows
 what the menu bar will say:
 
 | name | value |
@@ -88,6 +89,11 @@ what the menu bar will say:
 
 Anything else is shown as typed, up to 40 characters. An empty field shows only the memory pressure dot, which can be
 turned off on the same page; **Default** restores `{max}° {rpm}`.
+
+The same page has **Full speed at 95 °C**, on by default. With it on, a curve preset runs the fans at full speed
+once the CPU or GPU reaches 95 °C and returns to the curve below 88 °C. Turn it off and the curve stays in charge at
+any temperature; macOS still throttles a Mac that runs too hot. A helper older than 1.13 ignores the switch until
+you choose Update Helper… from the menu.
 
 Under the graph of a curve preset there is a **Slow down gradually** box. With it on, a curve lets the fans fall
 about 1 % of their range per second instead of following the temperature down at once, so a burst fades out over a

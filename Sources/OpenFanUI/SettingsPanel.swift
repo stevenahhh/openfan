@@ -21,6 +21,7 @@ final class SettingsPanel: NSView, NSTextFieldDelegate {
     private let field = NSTextField(string: "")
     private let preview = NSTextField(labelWithString: "")
     private let dotToggle = NSButton(checkboxWithTitle: "Show memory pressure dot", target: nil, action: nil)
+    private let panicToggle = NSButton(checkboxWithTitle: "Full speed at 95 \u{00B0}C", target: nil, action: nil)
     private let errorLabel = NSTextField(labelWithString: "")
     private var values = MenuBarValues()
 
@@ -99,16 +100,31 @@ final class SettingsPanel: NSView, NSTextFieldDelegate {
         hint.textColor = .secondaryLabelColor
         hint.preferredMaxLayoutWidth = width
 
+        let fanTitle = NSTextField(labelWithString: "Fans")
+        fanTitle.font = .systemFont(ofSize: 13, weight: .semibold)
+
+        panicToggle.target = self
+        panicToggle.action = #selector(panicToggled(_:))
+        panicToggle.state = settings.settings.panicFullSpeed ? .on : .off
+        panicToggle.font = .systemFont(ofSize: 12)
+
+        let panicHint = NSTextField(wrappingLabelWithString: "When the CPU or GPU reaches 95 \u{00B0}C, curve presets run the fans at full speed until it drops below 88 \u{00B0}C. Off leaves the curve in charge.")
+        panicHint.font = .systemFont(ofSize: 10)
+        panicHint.textColor = .secondaryLabelColor
+        panicHint.preferredMaxLayoutWidth = width
+
         errorLabel.font = .systemFont(ofSize: 11)
         errorLabel.textColor = .systemRed
 
-        let rows: [NSView] = [title, fieldRow, insertCaption] + tokenRows + [previewCaption, preview, dotToggle, hint, errorLabel]
+        let rows: [NSView] = [title, fieldRow, insertCaption] + tokenRows + [previewCaption, preview, dotToggle, hint, fanTitle, panicToggle, panicHint, errorLabel]
         let stack = NSStackView(views: rows)
         stack.orientation = .vertical
         stack.alignment = .leading
         stack.spacing = 8
         stack.setCustomSpacing(4, after: insertCaption)
         stack.setCustomSpacing(4, after: previewCaption)
+        stack.setCustomSpacing(16, after: hint)
+        stack.setCustomSpacing(4, after: panicToggle)
         stack.translatesAutoresizingMaskIntoConstraints = false
         addSubview(stack)
         NSLayoutConstraint.activate([
@@ -192,6 +208,11 @@ final class SettingsPanel: NSView, NSTextFieldDelegate {
 
     @objc private func dotToggled(_ sender: NSButton) {
         settings.setShowPressureDot(sender.state == .on)
+        persist()
+    }
+
+    @objc private func panicToggled(_ sender: NSButton) {
+        settings.setPanicFullSpeed(sender.state == .on)
         persist()
     }
 }

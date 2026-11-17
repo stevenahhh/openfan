@@ -13,6 +13,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     private lazy var helperOutdated = installer.isOutdated
     /// The down rate the active preset was last sent with, to resend it only when the setting really changed.
     private var appliedRampDown: Double?
+    private var appliedPanic = true
 
     private let smcQueue = DispatchQueue(label: "com.stevenahhh.openfan.smc", qos: .utility)
     private var smc: SMC?
@@ -269,7 +270,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
                 self.refreshStatusItem()
                 self.updateTimer()
                 // A resent curve starts over, so editing the menu bar text must not send one.
-                if self.rampDown != self.appliedRampDown { self.applyActivePreset() }
+                if self.rampDown != self.appliedRampDown || self.panic != self.appliedPanic { self.applyActivePreset() }
             },
             installHelper: { [weak self] in self?.runHelperAction(install: true) },
             uninstallHelper: { [weak self] in self?.runHelperAction(install: false) },
@@ -293,10 +294,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         settingsStore.settings.gradualCooldown && !helperOutdated ? AppSettings.gradualCooldownRate : nil
     }
 
+    /// True while the installed helper is older than this app, for the same reason as `rampDown`.
+    private var panic: Bool {
+        settingsStore.settings.panicFullSpeed || helperOutdated
+    }
+
     private func applyActivePreset() {
         appliedRampDown = rampDown
+        appliedPanic = panic
         if let preset = store.library.activePreset {
-            helper.setCurve(preset, rampDown: appliedRampDown)
+            helper.setCurve(preset, rampDown: appliedRampDown, panic: appliedPanic)
         } else {
             helper.setAuto()
         }

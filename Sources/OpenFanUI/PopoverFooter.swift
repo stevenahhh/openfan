@@ -80,7 +80,7 @@ final class PopoverFooter: NSView {
         }
         menuButton.target = self
         menuButton.action = #selector(menuTapped(_:))
-        menuButton.toolTip = "Install, uninstall, menu bar text, quit"
+        menuButton.toolTip = "Settings, install, uninstall, quit"
 
         let spacer = NSView()
         spacer.setContentHuggingPriority(NSLayoutConstraint.Priority(rawValue: 1), for: .horizontal)

@@ -340,7 +340,7 @@ public final class PopoverViewController: NSViewController {
         menu.addItem(withTitle: version.map { "OpenFan \($0)" } ?? "OpenFan", action: nil, keyEquivalent: "").isEnabled = false
         menu.addItem(.separator())
         let page = menu.addItem(
-            withTitle: showingSettings ? "Back to Presets" : "Menu Bar Text\u{2026}",
+            withTitle: showingSettings ? "Back to Presets" : "Settings\u{2026}",
             action: #selector(pageTapped(_:)),
             keyEquivalent: ""
         )
